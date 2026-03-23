@@ -4,7 +4,7 @@ execute_task.py - Execute single task via selected agent
 
 Simple workflow:
 1. Fetch task from Zrise
-2. Select appropriate agent (auto or manual)
+2. Select appropriate agent via agent registry
 3. Call selected agent
 4. Agent handles everything (including spawning subagents if needed)
 5. Return result
@@ -12,7 +12,7 @@ Simple workflow:
 Usage:
     python3 execute_task.py --task-id 42174 --workflow simple
     python3 execute_task.py --task-id 42174 --workflow email-draft --feedback "Thêm AC rõ hơn"
-    python3 execute_task.py --task-id 42174 --agent demo-be  # Manual agent selection
+    python3 execute_task.py --task-id 42174 --agent demo-be  # Manual agent selection (bypasses registry)
 """
 import argparse
 import json
@@ -175,31 +175,38 @@ def main():
     # Agent selection
     selected_agent = args.agent
     if not selected_agent:
-        # Auto-select agent based on task
-        print(f"🔍 Auto-selecting agent for task...")
-        agent_selector = SCRIPTS_DIR / 'agent_selector.py'
-        if agent_selector.exists():
+        # Use simple hub router with agent registry
+        print(f"🔍 Selecting agent via registry...")
+        hub_router = SCRIPTS_DIR / 'simple_hub_router.py'
+        if hub_router.exists():
             try:
+                # Build task dict for router
+                task_dict = {
+                    'department': task_context.get('project', '').lower() or 'general',
+                    'type': args.workflow,
+                    'task_id': args.task_id
+                }
+                
+                # Call hub router
                 result = subprocess.run(
-                    [sys.executable, str(agent_selector), 
-                     '--task-id', str(args.task_id),
-                     '--task-name', task_context.get('name', ''),
-                     '--task-description', task_context.get('description', '')],
-                    capture_output=True, text=True, timeout=10
+                    [sys.executable, str(hub_router),
+                     '--department', task_dict['department'],
+                     '--type', task_dict['type']],
+                    capture_output=True, text=True, timeout=5
                 )
                 if result.returncode == 0:
-                    selection = json.loads(result.stdout)
-                    selected_agent = selection.get('agent_id', 'zrise')
-                    print(f"✅ Selected agent: {selection.get('agent_name', selected_agent)} ({selection.get('selection_type', 'auto')})")
+                    router_output = json.loads(result.stdout.strip())
+                    selected_agent = router_output.get('selected_agent', 'general-agent')
+                    print(f"✅ Selected agent via registry: {selected_agent}")
                 else:
-                    selected_agent = 'zrise'
-                    print(f"⚠️ Agent selection failed, using default: {selected_agent}")
+                    selected_agent = 'general-agent'
+                    print(f"⚠️ Hub router failed, using default: {selected_agent}")
             except Exception as e:
-                selected_agent = 'zrise'
-                print(f"⚠️ Agent selection error: {e}, using default: {selected_agent}")
+                selected_agent = 'general-agent'
+                print(f"⚠️ Hub router error: {e}, using default: {selected_agent}")
         else:
-            selected_agent = 'zrise'
-            print(f"⚠️ Agent selector not found, using default: {selected_agent}")
+            selected_agent = 'general-agent'
+            print(f"⚠️ Hub router not found, using default: {selected_agent}")
     
     # Build agent prompt
     prompt = build_agent_prompt(task_context, args.workflow, args.feedback)
