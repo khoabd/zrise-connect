@@ -2,7 +2,49 @@
 
 Tất cả các thay đổi đáng chú ý cho skill này sẽ được ghi lại trong file này.
 
-## 3.3.4 (2026-03-25)
+## 3.5.0 (2026-03-26)
+
+### Tính năng mới
+
+- **Auto-detect Employee ID**: `poll_employee_work.py` tự động lấy employee ID từ Zrise credentials, không cần truyền `--employee-id` thủ công
+- **Sync Flag**: Thêm `--sync` flag để load lại tasks bị miss khi restart/reconnect
+- **Spam Control**: Scripts exit silent nếu không có task mới, không output gây confuse
+- **Silent Cron**: Cron jobs chạy `--no-deliver` để không spam Telegram khi không có work
+- **Task-based Approve**: `handle_review_response.py` hỗ trợ `--task-id` để approve trực tiếp khi không có job record
+- **Re-plan Support**: `auto_plan.py` handle cả re-plan khi task có `user_feedback`
+- **Channel Routing**: Sử dụng OpenClaw native routing thay vì hardcode Telegram
+
+### Scripts mới
+
+| Script | Purpose |
+|--------|---------|
+| `post_channel.py` | Gửi message qua OpenClaw native routing |
+| `post_plan_channel.py` | Post plan với APPROVE/FEEDBACK buttons |
+| `post_result_channel.py` | Post result với buttons |
+| `channel_listener.py` | Listen callbacks qua OpenClaw |
+| `watchdog.py` | Detect orphaned/stuck jobs |
+| `retry_handler.py` | Retry failed jobs |
+
+### Sửa lỗi
+
+- **Race Condition**: `claim_job()` dùng `BEGIN IMMEDIATE` để atomic lock
+- **False Description**: `auto_plan.py` handle `description: False` (bool) không phải string
+- **Missing detail.json**: `poll_employee_work.py` tạo `detail.json` trước khi `auto_plan.py` chạy
+- **Task Not Found**: `handle_review_response.py` hỗ trợ approve bằng `--task-id`
+
+### Cải thiện
+
+- **Heartbeat Tracking**: Executor update `heartbeat_at` mỗi 60s
+- **Timeout Detection**: `watchdog.py` detect jobs stuck > 30 min
+- **Retry Logic**: `retry_handler.py` với max_retries = 3
+- **Test Infrastructure**: 74 tests passing
+
+### Breaking Changes
+
+- Cron jobs cần chạy với `--no-deliver` để tránh spam
+- Scripts exit silent khi không có work (không có output)
+
+## 3.4.0 (2026-03-26)
 
 ### Tính năng mới
 - Thêm 4 script tự động: validate-skill.py, improve-skill.py, version-skill.py, lint-skill.py

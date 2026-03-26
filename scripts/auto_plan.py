@@ -6,11 +6,14 @@ Dùng SQLite cho status, detail.json cho task info
 Supports:
 - New tasks: status='new' → pending → AI lên plan
 - Re-plan tasks: status='feedback' → user đã feedback, cần revise plan
+
+Khi có task cần plan, script sẽ spawn AI agent để tạo plan và gửi Telegram.
 """
 
 import os
 import sys
 import json
+import subprocess
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -42,6 +45,39 @@ def _should_skip_no_tasks_message():
         return False  # Never reported, so report now
     elapsed = datetime.now() - last_time
     return elapsed < timedelta(minutes=SPAM_INTERVAL_MINUTES)
+
+def get_pending_without_plan():
+    """Lấy task đang pending nhưng chưa có plan (stuck tasks cần được xử lý)."""
+    conn = get_connection()
+    c = conn.cursor()
+    
+    # Lấy tất cả task có status='pending'
+    c.execute('SELECT task_id, name, status, updated_at FROM tasks WHERE status = ? ORDER BY updated_at', ('pending',))
+    rows = c.fetchall()
+    conn.close()
+    
+    pending_no_plan = []
+    for row in rows:
+        task_id = row[0]
+        detail_path = get_task_detail_path(task_id)
+        
+        # Check nếu chưa có plan
+        if detail_path.exists():
+            try:
+                with open(detail_path, 'r', encoding='utf-8') as f:
+                    detail = json.load(f)
+                # Nếu chưa có plan field, cần tạo
+                if not detail.get('plan'):
+                    pending_no_plan.append({
+                        "task_id": task_id,
+                        "name": row[1],
+                        "status": 'pending_no_plan',  # Mark rõ đây là pending chưa có plan
+                        "updated_at": row[3]
+                    })
+            except:
+                pass
+    
+    return pending_no_plan
 
 def get_new_tasks():
     """Lấy tất cả task có status = 'new' từ SQLite (new tasks cần lên plan)."""
@@ -201,11 +237,12 @@ Plan cần có:
     }
 
 def process_all_planning_tasks():
-    """Process tất cả task cần lên plan (new + re-plan)."""
+    """Process tất cả task cần lên plan (new + re-plan + pending không plan)."""
     new_tasks = get_new_tasks()
     replan_tasks = get_replan_tasks()
+    pending_no_plan_tasks = get_pending_without_plan()
     
-    all_tasks = new_tasks + replan_tasks
+    all_tasks = new_tasks + pending_no_plan_tasks + replan_tasks
     
     if not all_tasks:
         # Silent exit - no output, no agent call needed
@@ -230,9 +267,11 @@ def process_all_planning_tasks():
         
         # Determine if this is a re-plan
         is_replan = task['status'] == 'feedback' or bool(detail.get('user_feedback'))
+        is_pending_no_plan = task['status'] == 'pending_no_plan'
         
-        # Move to pending in DB
-        move_to_pending(task_id)
+        # Only move to pending if task is actually 'new'
+        if task['status'] == 'new':
+            move_to_pending(task_id)
         
         # Update re_plan_count nếu là re-plan
         if is_replan:
@@ -251,6 +290,94 @@ def process_all_planning_tasks():
         "replan_count": len(replan_tasks),
         "tasks": results
     }
+
+
+def spawn_plan_agent(task_id: int, is_replan: bool = False) -> dict:
+    """
+    Spawn AI agent để tạo plan cho task.
+    
+    Uses openclaw CLI để spawn agent với task info.
+    """
+    from post_channel import get_default_target
+    
+    workspace = Path(__file__).parent.parent.parent
+    task_dir = workspace / '.tasks' / str(task_id)
+    detail_path = task_dir / 'detail.json'
+    target = get_default_target() or ""
+    
+    # Build prompt cho agent
+    if is_replan:
+        prompt = f"""Bạn cần revise plan cho task #{task_id}.
+
+Đọc task detail từ: {detail_path}
+
+Sau đó:
+1. Xem xét user feedback trong detail.json
+2. Revise plan nếu cần
+3. Cập nhật detail.json với:
+   - plan: {{
+     "selected_agent": "agent phù hợp",
+     "execution_steps": [...],
+     "estimated_time": "X phút"
+   }}
+4. Gửi plan lên Telegram để review (channel: {target})
+5. Dùng post_plan_channel.py để gửi
+
+Nếu không có feedback cụ thể, giữ nguyên plan cũ và approve.
+"""
+    else:
+        prompt = f"""Bạn cần tạo plan cho task #{task_id}.
+
+Đọc task detail từ: {detail_path}
+
+Sau đó:
+1. Phân tích task
+2. Chọn agent phù hợp (coder, design-ba, qa-tester, hoặc ai-company)
+3. Tạo plan và ghi vào detail.json:
+   - plan: {{
+     "selected_agent": "agent phù hợp",
+     "execution_steps": [...],
+     "estimated_time": "X phút"
+   }}
+4. Gửi plan lên Telegram để review (channel: {target})
+5. Dùng post_plan_channel.py để gửi
+
+Ưu tiên:
+- coder cho code/script tasks
+- design-ba cho doc/requirement tasks  
+- qa-tester cho testing tasks
+- ai-company cho general tasks
+"""
+    
+    try:
+        # Spawn agent using openclaw CLI in background
+        # Use --deliver to send reply back to Telegram
+        # Run in background so script doesn't block
+        cmd = [
+            'nohup', 'openclaw', 'agent',
+            '--agent', 'zrise',
+            '--message', prompt,
+            '--deliver'
+        ]
+        
+        # Run in background, redirect output
+        with open('/dev/null', 'w') as devnull:
+            subprocess.Popen(cmd, stdout=devnull, stderr=devnull, cwd=str(workspace))
+        
+        return {
+            "success": True,
+            "task_id": task_id,
+            "is_replan": is_replan,
+            "output": "Agent spawned in background"
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "task_id": task_id,
+            "is_replan": is_replan,
+            "error": str(e)
+        }
+
 
 def print_task_info(info):
     """Print task info cho AI agent."""
@@ -317,18 +444,27 @@ def main():
                 print_task_info(task)
                 print()
         else:
-            # Default output for agent to consume
-            new_c = result.get('new_count', 0)
-            replan_c = result.get('replan_count', 0)
-            print(f"✅ Có {result['count']} task(s) cần plan:")
-            if new_c > 0:
-                print(f"   📋 New: {new_c}")
-            if replan_c > 0:
-                print(f"   🔄 Re-plan: {replan_c}")
-            print()
-            # Output first task for agent
-            if result['tasks']:
-                print_task_info(result['tasks'][0])
+            # Spawn AI agent for each task needing plan
+            spawned = 0
+            for task_info in result['tasks']:
+                task_id = task_info['task_id']
+                is_replan = task_info['is_replan']
+                
+                print(f"🤖 Spawning agent for task #{task_id}...")
+                spawn_result = spawn_plan_agent(task_id, is_replan)
+                
+                if spawn_result['success']:
+                    print(f"   ✅ Agent spawned for task #{task_id}")
+                    spawned += 1
+                else:
+                    error = spawn_result.get('error', 'Unknown error')
+                    print(f"   ❌ Failed: {error}")
+            
+            if spawned > 0:
+                print(f"\n✅ Đã spawn {spawned} agent(s) để tạo plan")
+                print("   Kết quả sẽ được gửi lên Telegram khi agent hoàn thành")
+            else:
+                print(f"\n⚠️ Không spawn được agent nào")
 
 if __name__ == '__main__':
     main()
