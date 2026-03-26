@@ -69,8 +69,11 @@ def init_db():
             assigned_at TEXT,
             started_at TEXT,
             completed_at TEXT,
+            heartbeat_at TEXT,
             result_path TEXT,
             error TEXT,
+            retry_count INTEGER DEFAULT 0,
+            max_retries INTEGER DEFAULT 3,
             FOREIGN KEY (agent_id) REFERENCES agents(id)
         )
     ''')
@@ -78,6 +81,11 @@ def init_db():
     # Index for fast polling by agent
     c.execute('''
         CREATE INDEX IF NOT EXISTS idx_jobs_agent_status ON jobs(agent_id, status)
+    ''')
+    
+    # Index for watchdog timeout queries
+    c.execute('''
+        CREATE INDEX IF NOT EXISTS idx_jobs_status_started ON jobs(status, started_at)
     ''')
     
     conn.commit()
@@ -396,8 +404,11 @@ def get_job(job_id: int) -> dict:
             "assigned_at": row[6],
             "started_at": row[7],
             "completed_at": row[8],
-            "result_path": row[9],
-            "error": row[10]
+            "heartbeat_at": row[9] if len(row) > 9 else None,
+            "result_path": row[10] if len(row) > 10 else None,
+            "error": row[11] if len(row) > 11 else None,
+            "retry_count": row[12] if len(row) > 12 else 0,
+            "max_retries": row[13] if len(row) > 13 else 3
         }
     return None
 
@@ -464,22 +475,217 @@ def get_jobs_for_agent(agent_id: str, status: str = None) -> list:
     ]
 
 def claim_job(job_id: int) -> dict:
-    """Mark job as in_progress (agent claims it)."""
+    """Mark job as in_progress (agent claims it).
+    
+    Uses atomic transaction with BEGIN IMMEDIATE to prevent race conditions
+    where multiple executors might claim the same job simultaneously.
+    """
+    conn = get_connection()
+    c = conn.cursor()
+    
+    # Use BEGIN IMMEDIATE to acquire write lock (prevents race condition)
+    c.execute("BEGIN IMMEDIATE")
+    
+    try:
+        now = datetime.now().isoformat()
+        
+        # Check current status
+        c.execute('''
+            SELECT status, agent_id FROM jobs WHERE id = ?
+        ''', (job_id,))
+        row = c.fetchone()
+        
+        if not row:
+            conn.rollback()
+            conn.close()
+            return {"job_id": job_id, "claimed": False, "error": "Job not found"}
+        
+        current_status = row[0]
+        current_agent = row[1]
+        
+        if current_status != 'assigned':
+            conn.rollback()
+            conn.close()
+            return {
+                "job_id": job_id, 
+                "claimed": False, 
+                "error": f"Job not available (status: {current_status})",
+                "current_agent": current_agent
+            }
+        
+        # Update to in_progress
+        c.execute('''
+            UPDATE jobs SET status = 'in_progress', started_at = ?, heartbeat_at = ?
+            WHERE id = ? AND status = 'assigned'
+        ''', (now, now, job_id))
+        
+        conn.commit()
+        success = c.rowcount > 0
+        conn.close()
+        
+        return {"job_id": job_id, "claimed": success, "started_at": now if success else None}
+        
+    except Exception as e:
+        conn.rollback()
+        conn.close()
+        raise
+
+
+def claim_job_atomic(job_id: int, agent_id: str) -> dict:
+    """
+    Atomically claim a job to prevent race condition.
+    
+    Uses SQLite's BEGIN IMMEDIATE to acquire write lock before checking
+    and updating. This ensures only one executor can claim a job even
+    when multiple pollers run simultaneously.
+    
+    Args:
+        job_id: The job ID to claim
+        agent_id: The agent claiming this job (for auditing)
+    
+    Returns:
+        dict with keys: claimed (bool), error (str if failed)
+    """
+    conn = get_connection()
+    c = conn.cursor()
+    
+    # BEGIN IMMEDIATE acquires a RESERVED lock immediately, then converts
+    # to EXCLUSIVE when writing. This blocks other writers.
+    c.execute("BEGIN IMMEDIATE")
+    
+    try:
+        now = datetime.now().isoformat()
+        
+        # Check job exists and is assigned
+        c.execute('''
+            SELECT status, agent_id FROM jobs WHERE id = ?
+        ''', (job_id,))
+        row = c.fetchone()
+        
+        if not row:
+            conn.rollback()
+            conn.close()
+            return {"claimed": False, "error": f"Job {job_id} not found"}
+        
+        current_status = row[0]
+        assigned_agent = row[1]
+        
+        if current_status != 'assigned':
+            conn.rollback()
+            conn.close()
+            return {
+                "claimed": False, 
+                "error": f"Job {job_id} already {current_status}",
+                "assigned_agent": assigned_agent
+            }
+        
+        # Claim the job - update status and heartbeat
+        c.execute('''
+            UPDATE jobs 
+            SET status = 'in_progress', 
+                started_at = ?, 
+                heartbeat_at = ?,
+                agent_id = ?
+            WHERE id = ? AND status = 'assigned'
+        ''', (now, now, agent_id, job_id))
+        
+        if c.rowcount == 0:
+            # Race condition: someone else claimed between our check and update
+            conn.rollback()
+            conn.close()
+            return {"claimed": False, "error": "Race condition - job claimed by another executor"}
+        
+        conn.commit()
+        conn.close()
+        
+        return {
+            "claimed": True, 
+            "job_id": job_id, 
+            "agent_id": agent_id,
+            "started_at": now
+        }
+        
+    except Exception as e:
+        conn.rollback()
+        conn.close()
+        raise
+
+
+def update_heartbeat(job_id: int) -> dict:
+    """Update heartbeat timestamp for watchdog monitoring.
+    
+    Call this periodically during long-running job execution to signal
+    the executor is still alive and working on the job.
+    
+    Args:
+        job_id: The job ID to update heartbeat for
+    
+    Returns:
+        dict with keys: updated (bool), heartbeat_at (str)
+    """
     conn = get_connection()
     c = conn.cursor()
     
     now = datetime.now().isoformat()
     
     c.execute('''
-        UPDATE jobs SET status = 'in_progress', started_at = ?
-        WHERE id = ? AND status = 'assigned'
+        UPDATE jobs SET heartbeat_at = ? WHERE id = ?
     ''', (now, job_id))
     
     conn.commit()
     success = c.rowcount > 0
     conn.close()
     
-    return {"job_id": job_id, "claimed": success, "started_at": now if success else None}
+    return {"job_id": job_id, "updated": success, "heartbeat_at": now if success else None}
+
+
+def get_timed_out_jobs(timeout_minutes: int = 30) -> list:
+    """Find jobs stuck in 'in_progress' beyond timeout.
+    
+    Jobs that have been in_progress without a heartbeat update
+    for longer than timeout_minutes are considered timed out.
+    
+    Args:
+        timeout_minutes: Minutes after which a job is considered timed out
+                        (default: 30 minutes)
+    
+    Returns:
+        List of job dicts that have timed out
+    """
+    conn = get_connection()
+    c = conn.cursor()
+    
+    # Jobs in_progress without heartbeat for > timeout_minutes
+    c.execute('''
+        SELECT * FROM jobs 
+        WHERE status = 'in_progress'
+        AND heartbeat_at < datetime('now', '-' || ? || ' minutes')
+        ORDER BY started_at ASC
+    ''', (timeout_minutes,))
+    
+    rows = c.fetchall()
+    conn.close()
+    
+    return [
+        {
+            "id": row[0],
+            "task_id": row[1],
+            "agent_id": row[2],
+            "workflow": row[3],
+            "status": row[4],
+            "priority": row[5],
+            "assigned_at": row[6],
+            "started_at": row[7],
+            "completed_at": row[8],
+            "heartbeat_at": row[9],
+            "result_path": row[10],
+            "error": row[11],
+            "retry_count": row[12] if len(row) > 12 else 0,
+            "max_retries": row[13] if len(row) > 13 else 3
+        }
+        for row in rows
+    ]
+
 
 def complete_job(job_id: int, result_path: str) -> dict:
     """Mark job as done with result."""

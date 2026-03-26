@@ -42,6 +42,7 @@ from db import (
     get_task_detail_path,
     get_tasks_dir,
     init_db,
+    update_heartbeat,
 )
 
 
@@ -188,19 +189,50 @@ def generate_session_uuid(job_id: int) -> str:
     return str(uuid.uuid5(uuid.NAMESPACE_DNS, f"executor-job-{job_id}"))
 
 
-def execute_in_session(session_key: str, prompt: str, agent_id: str, job_id: int = None) -> tuple:
+def execute_in_session(session_key: str, prompt: str, agent_id: str, job_id: int = None, heartbeat_interval: int = 60) -> tuple:
     """Execute task via Claude Code CLI (resumable session).
     
     Session is keyed by job_id (deterministic UUID) so executor can resume
     a job later and get the same session context.
     
+    Heartbeat is updated every heartbeat_interval seconds during execution
+    to signal to the watchdog that the executor is still alive.
+    
+    Args:
+        session_key: Key for session continuity
+        prompt: The execution prompt
+        agent_id: Agent ID for context
+        job_id: Job ID for heartbeat tracking
+        heartbeat_interval: Seconds between heartbeat updates (default: 60)
+    
     Returns:
         (result_text, error)
     """
     import subprocess
+    import threading
     
     # Generate deterministic session ID for this job
     session_id = generate_session_uuid(job_id) if job_id else session_key
+    
+    # Heartbeat tracker
+    heartbeat_stop = threading.Event()
+    
+    def heartbeat_worker():
+        """Background thread to update heartbeat during execution."""
+        while not heartbeat_stop.is_set():
+            heartbeat_stop.wait(timeout=heartbeat_interval)
+            if job_id and not heartbeat_stop.is_set():
+                try:
+                    update_heartbeat(job_id)
+                    logger.debug(f"[{agent_id}] Heartbeat updated for job {job_id}")
+                except Exception as e:
+                    logger.warning(f"[{agent_id}] Failed to update heartbeat: {e}")
+    
+    # Start heartbeat thread
+    heartbeat_thread = None
+    if job_id:
+        heartbeat_thread = threading.Thread(target=heartbeat_worker, daemon=True)
+        heartbeat_thread.start()
     
     # Build prompt
     cc_prompt = f"""{prompt}
@@ -228,14 +260,25 @@ When complete:
             cwd=str(get_tasks_dir()),
         )
         
+        # Stop heartbeat
+        heartbeat_stop.set()
+        if heartbeat_thread:
+            heartbeat_thread.join(timeout=2)
+        
         if result.returncode != 0:
             return None, f"Claude Code error: {result.stderr[-500:]}"
         
         return result.stdout.strip(), None
         
     except subprocess.TimeoutExpired:
+        heartbeat_stop.set()
+        if heartbeat_thread:
+            heartbeat_thread.join(timeout=2)
         return None, "Execution timeout (5 min)"
     except Exception as e:
+        heartbeat_stop.set()
+        if heartbeat_thread:
+            heartbeat_thread.join(timeout=2)
         return None, f"Execution error: {e}"
 
 
