@@ -199,16 +199,31 @@ Tạo SQLite + sync agents từ YAML.
 
 ### 3. Setup Cron
 
+Cần tạo **2 cron jobs riêng** để tách biệt poll và plan:
+
 ```bash
+# Cron 1: Poll task từ Zrise (nhanh, mỗi 1 phút)
 openclaw cron add \
   --name "zrise-poll" \
+  --cron "* * * * *" \
+  --agent <AGENT_ID> \
+  --session isolated \
+  --message "cd /path/to/skills/zrise-connect && python3 scripts/poll_employee_work.py --once" \
+  --announce \
+  --channel telegram
+
+# Cron 2: Auto plan cho tasks (chậm hơn, mỗi 5 phút)
+openclaw cron add \
+  --name "zrise-auto-plan" \
   --cron "*/5 * * * *" \
   --agent <AGENT_ID> \
   --session isolated \
-  --message "Poll + plan: poll_employee_work.py --once && auto_plan.py --info" \
+  --message "cd /path/to/skills/zrise-connect && python3 scripts/auto_plan.py --info" \
   --announce \
   --channel telegram
 ```
+
+**Lưu ý:** Đường dẫn tuyệt đối đến skill directory (VD: `/Users/khoabui/.openclaw/workspace-ai-company/skills/zrise-connect`)
 
 ---
 

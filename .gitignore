@@ -1,3 +1,77 @@
+# Database files (local data)
+*.db
+*.sqlite
+*.sqlite3
+
+# Environment files (secrets)
+.env
+.env.local
+.env.*.local
+.envrc
+
+# Python cache
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+ENV/
+env/
+.venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Local state (should not be shared)
+state/local/
+state/zrise/work-items/*.json
+!state/zrise/work-items/.gitkeep
+
+# Test cache
 .pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# Logs
+*.log
+logs/
+
+# Node (if any)
+node_modules/
+npm-debug.log
+yarn-error.log
+
+# Local secrets (OpenClaw config reference only - actual config in ~/.openclaw/)
+# Do NOT commit actual tokens/keys
+
+# Temporary files
+*.tmp
+*.bak
+*.backup

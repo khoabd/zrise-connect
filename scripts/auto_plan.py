@@ -24,6 +24,124 @@ from db import get_connection, get_task, get_all_agents, get_task_detail_path, s
 LAST_NO_TASKS_FILE = Path(__file__).parent.parent.parent / '.tasks' / '.last_no_tasks'
 SPAM_INTERVAL_MINUTES = 15
 
+def post_plan_to_telegram(task_id: int, plan: dict, task_detail: dict = None, is_replan: bool = False) -> dict:
+    """
+    Post plan to Telegram channel with APPROVE/FEEDBACK buttons.
+    Uses subprocess to call openclaw message send.
+    """
+    TELEGRAM_CHANNEL = "-1003706186341"
+    
+    # Build plan text
+    task_name = task_detail.get('name', f'Task #{task_id}') if task_detail else f'Task #{task_id}'
+    selected_agent = plan.get('selected_agent', 'N/A')
+    execution_steps = plan.get('execution_steps', [])
+    estimated_time = plan.get('estimated_time', 'N/A')
+    approach = plan.get('approach', '')
+    priority = plan.get('priority', 'normal')
+    feedback = task_detail.get('user_feedback', '') if task_detail else ''
+    
+    # Header
+    header = "🤖 *AI Execution Plan - Review Required*\n\n"
+    if is_replan:
+        header = "🔄 *AI Re-Plan - Review Required*\n\n"
+    
+    # Task info
+    task_info = f"📋 *Task:* #{task_id} - {task_name}\n"
+    task_info += f"🤖 *Agent:* {selected_agent}\n"
+    task_info += f"⏱️  *Estimated:* {estimated_time}\n"
+    
+    # Steps
+    steps_text = "\n📌 *Execution Steps:*\n"
+    if execution_steps:
+        for i, step in enumerate(execution_steps[:8], 1):
+            step_text = step if isinstance(step, str) else (step.get('description') or step.get('name') or str(step))
+            steps_text += f"  {i}. {step_text[:80]}\n"
+    
+    footer = "\n---\nReply [APPROVE] hoặc [FEEDBACK]"
+    
+    text = header + task_info + steps_text + footer
+    text = text[:4096]
+    
+    # Format for markdown
+    import urllib.parse
+    
+    # Build inline keyboard JSON
+    keyboard = {
+        "inline_keyboard": [[
+            {"text": "✅ APPROVE", "callback_data": f"approve_{task_id}"},
+            {"text": "💬 FEEDBACK", "callback_data": f"feedback_{task_id}"}
+        ]]
+    }
+    import json as json_lib
+    keyboard_str = urllib.parse.quote(json_lib.dumps(keyboard))
+    
+    # Try direct Telegram API first
+    import requests
+    
+    # Get bot token from openclaw config
+    config_path = Path.home() / '.openclaw' / 'openclaw.json'
+    bot_token = None
+    if config_path.exists():
+        with open(config_path) as f:
+            config = json.load(f)
+        # Try to find bot token in various places
+        plugins = config.get('plugins', {})
+        entries = plugins.get('entries', {})
+        
+        # Try telegram plugin first
+        telegram = entries.get('telegram', {})
+        bot_token = telegram.get('botToken')
+        
+        # Try ai-company account
+        if not bot_token:
+            accounts = config.get('accounts', {})
+            for account_id, account_data in accounts.items():
+                if isinstance(account_data, dict):
+                    tg = account_data.get('telegram', {})
+                    bot_token = tg.get('botToken') or tg.get('bot_token')
+                    if bot_token:
+                        break
+    
+    if bot_token:
+        url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+        params = {
+            'chat_id': TELEGRAM_CHANNEL,
+            'text': text,
+            'parse_mode': 'Markdown',
+            'reply_markup': json_lib.dumps(keyboard)
+        }
+        try:
+            r = requests.post(url, params=params, timeout=30)
+            result = r.json()
+            if result.get('ok'):
+                msg_id = result.get('result', {}).get('message_id')
+                # Log to task
+                add_task_log(task_id, 'plan_posted_telegram', 'auto_plan', {
+                    'target': TELEGRAM_CHANNEL,
+                    'message_id': msg_id
+                })
+                return {"success": True, "message_id": msg_id, "target": TELEGRAM_CHANNEL}
+        except Exception as e:
+            pass
+    
+    # Fallback: use openclaw message send
+    try:
+        cmd = [
+            'openclaw', 'message', 'send',
+            '--channel', 'telegram',
+            '--target', TELEGRAM_CHANNEL,
+            '--', text
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        if result.returncode == 0:
+            add_task_log(task_id, 'plan_posted_telegram', 'auto_plan', {'target': TELEGRAM_CHANNEL})
+            return {"success": True, "target": TELEGRAM_CHANNEL}
+    except:
+        pass
+    
+    return {"success": False, "error": "Failed to send"}
+
+
 def _get_last_no_tasks_time():
     """Get timestamp of last 'no tasks' message."""
     if not LAST_NO_TASKS_FILE.exists():
@@ -61,23 +179,82 @@ def get_pending_without_plan():
         task_id = row[0]
         detail_path = get_task_detail_path(task_id)
         
-        # Check nếu chưa có plan
+        if not detail_path.exists():
+            continue
+        
+        try:
+            with open(detail_path, 'r', encoding='utf-8') as f:
+                detail = json.load(f)
+        except:
+            continue
+        
+        # Skip if has execution_steps (already planned) OR selected_agent
+        has_plan = detail.get('plan') or detail.get('execution_steps') or detail.get('selected_agent')
+        if not has_plan:
+            pending_no_plan.append({
+                "task_id": task_id,
+                "name": row[1],
+                "status": 'pending_no_plan',
+                "updated_at": row[3]
+            })
+    
+    return pending_no_plan
+
+
+def get_pending_with_plan_not_posted():
+    """Lấy task đã có plan nhưng chưa được post lên Telegram.
+    
+    Đây là các task đã được AI agent tạo plan, nhưng do timeout hoặc lỗi
+    nên chưa được gửi cho user approve.
+    """
+    conn = get_connection()
+    c = conn.cursor()
+    
+    # Lấy tất cả task có status='pending'
+    c.execute('SELECT task_id, name, status, updated_at FROM tasks WHERE status = ? ORDER BY updated_at', ('pending',))
+    rows = c.fetchall()
+    conn.close()
+    
+    needs_post = []
+    for row in rows:
+        task_id = row[0]
+        detail_path = get_task_detail_path(task_id)
+        logs_path = get_tasks_dir() / str(task_id) / 'logs.json'
+        
+        # Check nếu đã có plan
         if detail_path.exists():
             try:
                 with open(detail_path, 'r', encoding='utf-8') as f:
                     detail = json.load(f)
-                # Nếu chưa có plan field, cần tạo
-                if not detail.get('plan'):
-                    pending_no_plan.append({
+                
+                has_plan = detail.get('execution_steps') and detail.get('selected_agent')
+                if not has_plan:
+                    continue
+                
+                # Check logs để xem đã được post chưa
+                already_posted = False
+                if logs_path.exists():
+                    try:
+                        with open(logs_path, 'r', encoding='utf-8') as f:
+                            logs = json.load(f)
+                        for log in logs:
+                            if log.get('event') == 'plan_posted_telegram':
+                                already_posted = True
+                                break
+                    except:
+                        pass
+                
+                if not already_posted:
+                    needs_post.append({
                         "task_id": task_id,
                         "name": row[1],
-                        "status": 'pending_no_plan',  # Mark rõ đây là pending chưa có plan
+                        "status": 'pending_plan_not_posted',
                         "updated_at": row[3]
                     })
             except:
                 pass
     
-    return pending_no_plan
+    return needs_post
 
 def get_new_tasks():
     """Lấy tất cả task có status = 'new' từ SQLite (new tasks cần lên plan)."""
@@ -237,12 +414,19 @@ Plan cần có:
     }
 
 def process_all_planning_tasks():
-    """Process tất cả task cần lên plan (new + re-plan + pending không plan)."""
+    """Process tất cả task cần lên plan (new + re-plan + pending không plan + pending đã plan chưa post)."""
     new_tasks = get_new_tasks()
     replan_tasks = get_replan_tasks()
     pending_no_plan_tasks = get_pending_without_plan()
+    pending_plan_not_posted = get_pending_with_plan_not_posted()
     
-    all_tasks = new_tasks + pending_no_plan_tasks + replan_tasks
+    # Tasks cần spawn agent (chưa có plan)
+    tasks_needing_agent = new_tasks + pending_no_plan_tasks + replan_tasks
+    
+    # Tasks đã có plan nhưng cần post Telegram
+    tasks_needing_post = pending_plan_not_posted
+    
+    all_tasks = tasks_needing_agent + tasks_needing_post
     
     if not all_tasks:
         # Silent exit - no output, no agent call needed
@@ -279,8 +463,19 @@ def process_all_planning_tasks():
             detail['re_plan_count'] = current_count + 1
             save_task_detail(task_id, detail)
         
+        # Determine status for this task
+        if task['status'] == 'pending_plan_not_posted':
+            task_status = 'pending_plan_not_posted'
+        elif task['status'] == 'pending_no_plan':
+            task_status = 'pending_no_plan'
+        elif is_replan:
+            task_status = 'replan'
+        else:
+            task_status = 'new'
+        
         # Format info
         info = format_task_info(task_id, detail, agents, is_replan)
+        info['status'] = task_status  # Include status for filtering later
         results.append(info)
     
     return {
@@ -444,27 +639,63 @@ def main():
                 print_task_info(task)
                 print()
         else:
-            # Spawn AI agent for each task needing plan
+            # Process tasks: spawn agents for new tasks, post plans for existing plans
             spawned = 0
-            for task_info in result['tasks']:
-                task_id = task_info['task_id']
-                is_replan = task_info['is_replan']
-                
-                print(f"🤖 Spawning agent for task #{task_id}...")
-                spawn_result = spawn_plan_agent(task_id, is_replan)
-                
-                if spawn_result['success']:
-                    print(f"   ✅ Agent spawned for task #{task_id}")
-                    spawned += 1
-                else:
-                    error = spawn_result.get('error', 'Unknown error')
-                    print(f"   ❌ Failed: {error}")
+            posted = 0
             
-            if spawned > 0:
-                print(f"\n✅ Đã spawn {spawned} agent(s) để tạo plan")
-                print("   Kết quả sẽ được gửi lên Telegram khi agent hoàn thành")
+            # Get separate lists based on status field from get_pending_with_plan_not_posted
+            tasks_needing_agent = [t for t in result['tasks'] if t.get('status') == 'pending_no_plan']
+            tasks_needing_post = [t for t in result['tasks'] if t.get('status') == 'pending_plan_not_posted']
+            
+            # 1. Tasks cần spawn agent (chưa có plan) - skip trong vòng lặp này
+            # Agent spawning không hoạt động tốt - chỉ log
+            if tasks_needing_agent:
+                print(f"📋 {len(tasks_needing_agent)} task(s) cần tạo plan (agent spawning tạm tắt)")
+                for task_info in tasks_needing_agent:
+                    print(f"   - Task #{task_info['task_id']}")
+            
+            # 2. Tasks đã có plan nhưng cần post Telegram
+            if tasks_needing_post:
+                print(f"📤 {len(tasks_needing_post)} task(s) đã có plan - đang post lên Telegram...")
+                
+                for task_info in tasks_needing_post:
+                    task_id = task_info['task_id']
+                    task_name = task_info.get('name', f'Task #{task_id}')
+                    print(f"   Posting #{task_id}: {task_name[:40]}...")
+                    
+                    # Load detail
+                    detail_path = get_task_detail_path(task_id)
+                    if detail_path.exists():
+                        try:
+                            with open(detail_path, 'r', encoding='utf-8') as f:
+                                task_detail = json.load(f)
+                            
+                            plan = {
+                                'selected_agent': task_detail.get('selected_agent', 'unknown'),
+                                'execution_steps': task_detail.get('execution_steps', []),
+                                'estimated_time': task_detail.get('estimated_time', 'N/A')
+                            }
+                            
+                            # Post to Telegram
+                            post_result = post_plan_to_telegram(
+                                task_id=task_id,
+                                plan=plan,
+                                task_detail=task_detail,
+                                is_replan=False
+                            )
+                            
+                            if post_result.get('success'):
+                                print(f"      ✅ Posted successfully")
+                                posted += 1
+                            else:
+                                print(f"      ⚠️ Failed: {str(post_result.get('error'))[:50]}")
+                        except Exception as e:
+                            print(f"      ❌ Error: {e}")
+            
+            if spawned > 0 or posted > 0:
+                print(f"\n✅ Hoàn thành: {spawned} spawned, {posted} posted")
             else:
-                print(f"\n⚠️ Không spawn được agent nào")
+                print(f"\n✅ Không có task nào cần xử lý")
 
 if __name__ == '__main__':
     main()
