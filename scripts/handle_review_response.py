@@ -5,6 +5,7 @@ handle_review_response.py - Orchestrator handles human APPROVE or FEEDBACK respo
 Usage:
     python3 handle_review_response.py --job-id 4 --approve
     python3 handle_review_response.py --job-id 4 --feedback "Add more details"
+    python3 handle_review_response.py --task-id 42499 --approve  # Also works with task_id
     
 Workflow:
 - APPROVE: writeback to Zrise + fill timesheet + attach files + mark complete
@@ -19,8 +20,79 @@ from datetime import datetime
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from db import init_db, get_job, update_job_status, get_tasks_dir, add_task_log
+from db import init_db, get_job, get_task, update_job_status, get_tasks_dir, add_task_log, update_task_status
 from zrise_utils import connect_zrise
+
+
+def approve_by_task_id(task_id: int) -> dict:
+    """
+    APPROVE flow by task_id (when no job exists).
+    
+    1. Get task + detail
+    2. Write result to Zrise task
+    3. Fill timesheet
+    4. Mark task as done in SQLite
+    """
+    task = get_task(task_id)
+    if not task:
+        return {"success": False, "error": f"Task {task_id} not found"}
+    
+    task_dir = get_tasks_dir() / str(task_id)
+    detail_path = task_dir / "detail.json"
+    
+    if not detail_path.exists():
+        return {"success": False, "error": f"Task detail not found: {detail_path}"}
+    
+    # Load task detail
+    try:
+        detail = json.loads(detail_path.read_text(encoding='utf-8'))
+    except Exception as e:
+        return {"success": False, "error": f"Cannot read task detail: {e}"}
+    
+    results = {
+        "task_id": task_id,
+        "zrise_writeback": False,
+        "timesheet": False,
+        "task_status": "approved"
+    }
+    
+    try:
+        # Write result to Zrise task
+        result_text = detail.get('result', '') or detail.get('execution_result', '')
+        
+        if result_text:
+            try:
+                db, uid, secret, models, url = connect_zrise()
+                
+                # Write result as comment
+                models.execute_kw(
+                    db, uid, secret, 'project.task', 'message_post',
+                    [[task_id]],
+                    {'body': f"<p>✅ <b>AI Result (Approved)</b></p><p>{result_text[:4000]}</p>", 
+                     'message_type': 'comment'}
+                )
+                results['zrise_writeback'] = True
+            except Exception as e:
+                results['zrise_error'] = str(e)
+        
+        # Fill timesheet (if result has duration)
+        duration = detail.get('estimated_time') or detail.get('actual_duration')
+        if duration:
+            try:
+                from fill_timesheet import fill_timesheet
+                fill_timesheet(task_id, duration, "AI Task Completion")
+                results['timesheet'] = True
+            except Exception as e:
+                results['timesheet_error'] = str(e)
+        
+        # Mark task as approved in SQLite
+        update_task_status(task_id, 'approved')
+        add_task_log(task_id, 'task_approved', 'human', {'method': 'task_id_approval'})
+        
+        return {"success": True, **results}
+        
+    except Exception as e:
+        return {"success": False, "error": str(e)}
 
 
 def approve_job(job_id: int) -> dict:
@@ -219,7 +291,8 @@ def feedback_job(job_id: int, feedback: str) -> dict:
 
 def main():
     parser = argparse.ArgumentParser(description='Handle human review response')
-    parser.add_argument('--job-id', type=int, required=True, help='Job ID')
+    parser.add_argument('--job-id', type=int, help='Job ID (alternative to --task-id)')
+    parser.add_argument('--task-id', type=int, help='Task ID (alternative to --job-id)')
     parser.add_argument('--approve', action='store_true', help='Approve the result')
     parser.add_argument('--feedback', type=str, help='Provide feedback for revision')
     
@@ -228,23 +301,63 @@ def main():
     if not (args.approve or args.feedback):
         parser.error("Must specify --approve or --feedback")
     
+    if not (args.job_id or args.task_id):
+        parser.error("Must specify --job-id or --task-id")
+    
     init_db()
     
-    if args.approve:
-        result = approve_job(args.job_id)
-        if result['success']:
-            print(f"✅ Job #{args.job_id} APPROVED")
-            print(f"   Results: {result['results']}")
-        else:
-            print(f"❌ Failed: {result.get('error')}")
-    
-    elif args.feedback:
-        result = feedback_job(args.job_id, args.feedback)
-        if result['success']:
-            print(f"🔄 Job #{args.job_id} FEEDBACK sent")
-            print(f"   New job created: #{result['new_job_id']}")
-        else:
-            print(f"❌ Failed: {result.get('error')}")
+    # Prefer job-id if both provided
+    if args.job_id:
+        if args.approve:
+            result = approve_job(args.job_id)
+            if result['success']:
+                print(f"✅ Job #{args.job_id} APPROVED")
+                print(f"   Results: {result.get('results', {})}")
+            else:
+                print(f"❌ Failed: {result.get('error')}")
+        elif args.feedback:
+            result = feedback_job(args.job_id, args.feedback)
+            if result['success']:
+                print(f"🔄 Job #{args.job_id} FEEDBACK sent")
+                print(f"   New job created: #{result.get('new_job_id')}")
+            else:
+                print(f"❌ Failed: {result.get('error')}")
+    elif args.task_id:
+        if args.approve:
+            result = approve_by_task_id(args.task_id)
+            if result['success']:
+                print(f"✅ Task #{args.task_id} APPROVED (via task_id)")
+                print(f"   Writeback: {result.get('zrise_writeback')}")
+                print(f"   Timesheet: {result.get('timesheet')}")
+            else:
+                print(f"❌ Failed: {result.get('error')}")
+        elif args.feedback:
+            # Feedback by task_id - need job to exist
+            task = get_task(args.task_id)
+            if not task:
+                print(f"❌ Task {args.task_id} not found")
+            else:
+                # Get pending job for this task
+                job = get_job(task_id=args.task_id)
+                if job:
+                    result = feedback_job(job['id'], args.feedback)
+                else:
+                    # No job - just save feedback to detail.json
+                    detail_path = get_tasks_dir() / str(args.task_id) / "detail.json"
+                    if detail_path.exists():
+                        detail = json.loads(detail_path.read_text(encoding='utf-8'))
+                        detail['user_feedback'] = args.feedback
+                        detail_path.write_text(json.dumps(detail, ensure_ascii=False, indent=2), encoding='utf-8')
+                        update_task_status(args.task_id, 'feedback')
+                        print(f"🔄 Task #{args.task_id} FEEDBACK saved (no job existed)")
+                    else:
+                        print(f"❌ Task detail not found")
+                        return
+                
+                if result and result.get('success'):
+                    print(f"🔄 Task #{args.task_id} FEEDBACK sent")
+                else:
+                    print(f"❌ Failed: {result.get('error') if result else 'Unknown error'}")
 
 
 if __name__ == '__main__':
