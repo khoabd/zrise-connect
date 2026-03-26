@@ -117,6 +117,7 @@ class TestInvalidTransitions:
 
     def test_cannot_skip_assigned_to_done(self, test_db):
         """Test: cannot transition directly from assigned to done."""
+        from helpers import safe_transition_job
         cursor = test_db.cursor()
         cursor.execute(
             "INSERT INTO jobs (id, title, status) VALUES (?, ?, ?)",
@@ -125,11 +126,7 @@ class TestInvalidTransitions:
         test_db.commit()
 
         # Try direct transition (should not work with proper guard)
-        cursor.execute(
-            "UPDATE jobs SET status = 'done' WHERE id = ? AND status = ?",
-            ("JOB-INVALID-1", "assigned"),
-        )
-        test_db.commit()
+        safe_transition_job(test_db, "JOB-INVALID-1", "done")
 
         # Verify job is still in assigned state
         cursor.execute("SELECT status FROM jobs WHERE id = ?", ("JOB-INVALID-1",))
@@ -137,6 +134,7 @@ class TestInvalidTransitions:
 
     def test_cannot_skip_in_progress(self, test_db):
         """Test: cannot transition from pending directly to in_progress."""
+        from helpers import safe_transition_job
         cursor = test_db.cursor()
         cursor.execute(
             "INSERT INTO jobs (id, title, status) VALUES (?, ?, ?)",
@@ -144,17 +142,14 @@ class TestInvalidTransitions:
         )
         test_db.commit()
 
-        cursor.execute(
-            "UPDATE jobs SET status = 'in_progress' WHERE id = ? AND status = ?",
-            ("JOB-INVALID-2", "pending"),
-        )
-        test_db.commit()
+        safe_transition_job(test_db, "JOB-INVALID-2", "in_progress")
 
         cursor.execute("SELECT status FROM jobs WHERE id = ?", ("JOB-INVALID-2",))
         assert cursor.fetchone()["status"] == "pending"
 
     def test_cannot_transition_from_done(self, test_db):
         """Test: done is a terminal state (cannot transition out)."""
+        from helpers import safe_transition_job
         cursor = test_db.cursor()
         cursor.execute(
             "INSERT INTO jobs (id, title, status) VALUES (?, ?, ?)",
@@ -162,11 +157,7 @@ class TestInvalidTransitions:
         )
         test_db.commit()
 
-        cursor.execute(
-            "UPDATE jobs SET status = 'in_progress' WHERE id = ? AND status = ?",
-            ("JOB-INVALID-3", "done"),
-        )
-        test_db.commit()
+        safe_transition_job(test_db, "JOB-INVALID-3", "in_progress")
 
         cursor.execute("SELECT status FROM jobs WHERE id = ?", ("JOB-INVALID-3",))
         assert cursor.fetchone()["status"] == "done"
@@ -356,6 +347,7 @@ class TestJobFlowEdgeCases:
 
     def test_job_without_assignee_cannot_be_claimed(self, test_db):
         """Test that unassigned jobs cannot transition to in_progress."""
+        from helpers import safe_transition_job
         job_id = "JOB-EDGE-1"
         cursor = test_db.cursor()
 
@@ -367,11 +359,7 @@ class TestJobFlowEdgeCases:
         test_db.commit()
 
         # Try to skip to in_progress
-        cursor.execute(
-            "UPDATE jobs SET status = 'in_progress' WHERE id = ? AND status = ?",
-            (job_id, "pending"),
-        )
-        test_db.commit()
+        safe_transition_job(test_db, job_id, "in_progress")
 
         # Should still be pending
         cursor.execute("SELECT status FROM jobs WHERE id = ?", (job_id,))
@@ -379,6 +367,7 @@ class TestJobFlowEdgeCases:
 
     def test_already_claimed_job_cannot_be_claimed_again(self, test_db):
         """Test idempotency: claiming an already-claimed job fails."""
+        from helpers import safe_claim_job
         job_id = "JOB-EDGE-2"
         cursor = test_db.cursor()
 
@@ -389,11 +378,7 @@ class TestJobFlowEdgeCases:
         test_db.commit()
 
         # Try to claim again (should fail due to state check)
-        cursor.execute(
-            "UPDATE jobs SET assignee = 'user-2' WHERE id = ? AND status = ?",
-            (job_id, "in_progress"),
-        )
-        test_db.commit()
+        safe_claim_job(test_db, job_id, "user-2")
 
         # Assignee should still be user-1
         cursor.execute("SELECT assignee FROM jobs WHERE id = ?", (job_id,))

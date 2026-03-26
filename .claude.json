@@ -1,0 +1,33 @@
+{
+  "project": {
+    "name": "zrise-connect",
+    "description": "OpenClaw-Zrise integration skill for project management automation",
+    "readme": "CLAUDE.md"
+  },
+  "agent": {
+    "mode": "role-based",
+    "role": "coding-agent",
+    "orchestrator": "openclaw-ai-company"
+  },
+  "permissions": {
+    "allow": [
+      "Read",
+      "Edit", 
+      "Bash",
+      "Glob",
+      "Grep",
+      "ReadMultiple"
+    ],
+    "deny": [
+      "WebFetch",
+      "WebSearch"
+    ]
+  },
+  "tools": {
+    "claudeCode": {
+      "path": "/Users/khoabui/.local/bin/claude",
+      "permissionMode": "bypassPermissions",
+      "printMode": true
+    }
+  }
+}

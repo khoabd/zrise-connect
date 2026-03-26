@@ -1,92 +1,244 @@
-# zrise-connect - Zrise Integration Skill v3.3
+# zrise-connect — Zrise Integration Skill v3.5
 
-## 🎯 Purpose
+## 🎯 Mục đích
 
-Kết nối và vận hành Zrise qua XML-RPC API.
+Kết nối OpenClaw agent với Zrise qua XML-RPC API:
+- Poll task tự động → SQLite + `.tasks/<task_id>/detail.json`
+- AI agent tự lên plan
+- User approve → Agent execute → Writeback → Done
 
-## ⚠️ QUAN TRỌNG — Quy tắc xử lý task
+## 📁 Data Structure
 
-Khi được yêu cầu "làm task", agent **PHẢI** dùng Lobster workflow. **KHÔNG** tự:
-- Generate kết quả luôn
-- Post kết quả lên Zrise mà chưa được approve
-- Kéo stage Done mà chưa được approve
-- Gọi script riêng lẻ
+### SQLite: `.tasks/task_registry.db`
 
-### 🔄 Flow chuẩn (bắt buộc qua Lobster)
+```sql
+-- Tasks table
+tasks(task_id, name, status, created_at, updated_at, assigned_agent, priority, deadline)
 
-```
-lobster run skills/zrise-connect/workflows/zrise-execute.lobster \
-  --args-json '{"task_id": 42349, "user_message": "viết giới thiệu công ty"}'
-```
-
-**Flow steps:**
-```
-1. Fetch task từ Zrise
-2. AI phân tích intent + lên plan
-3. Post plan lên Zrise
-4. Kéo stage → In Process
-⏸️  APPROVAL: Review plan
-   → lobster(action="resume", token=..., approve=true)  # approve
-   → lobster(action="resume", token=..., approve=false) # reject
-5. AI execute task theo plan
-⏸️  APPROVAL: Review kết quả
-   → lobster(action="resume", token=..., approve=true)  # approve → auto writeback + timesheet + Done
-   → lobster(action="resume", token=..., approve=false) # reject → cần revise thủ công
-6. (auto) Writeback kết quả lên Zrise
-7. (auto) Fill timesheet
-8. (auto) Stage → Done
+-- Agents table  
+agents(id, name, department, workflow, is_active)
 ```
 
-### Khi revise sau reject:
-```bash
-lobster resume --token "..." --approve false
+### File System
+
+```
+~/.openclaw/workspace-ai-company/.tasks/
+└── <task_id>/
+    ├── detail.json    # Task info + plan + feedback (toàn bộ decisions)
+    └── logs.json     # Audit log
+```
+
+### Task Status Flow
+
+```
+new → pending → pending_approval → approved → executing → done
+                         ↓
+                    feedback → (replan) → new
 ```
 
 ---
 
-## 📦 Scripts (chỉ dùng cho debug/manual)
+## 🤖 AI Agent Tools
+
+### Tool 1: poll_employee_work.py
 
 ```bash
-# Fetch task data
-python3 scripts/fetch_task_data.py <task_id>
-
-# Update stage
-python3 scripts/update_task_stage.py <task_id> "In Process" --comment "Bắt đầu"
-
-# Post comment
-echo "nội dung" | python3 scripts/writeback_to_zrise.py --task-id <id> --workflow general
-
-# Fill timesheet
-python3 scripts/fill_timesheet.py --task-id <id> --hours 0.5 --description "mô tả"
-
-# Poll pending tasks (cron)
-python3 scripts/poll_employee_work.py --employee-id <ID> --limit 10 --json
+python3 scripts/poll_employee_work.py --employee-id 200 --once
 ```
 
-## ⚠️ Zrise XML-RPC Gotchas
+**Action:**
+- Poll tasks từ Zrise
+- Tạo record trong SQLite (status='new')
+- Tạo `.tasks/<task_id>/detail.json`
+- Tạo `.tasks/<task_id>/logs.json`
 
-```python
-# write(): [id, {vals}]
-models.execute_kw(db, uid, pwd, 'model', 'write', [id, {'field': val}])
+---
 
-# message_post(): [[id]], {kwargs}
-models.execute_kw(db, uid, pwd, 'model', 'message_post', [[id]], {'body': '...', 'message_type': 'comment'})
-
-# Timesheet TRƯỚC stage Done (Zrise bắt buộc)
-```
-
-## 🔧 Lobster Setup
+### Tool 2: auto_plan.py
 
 ```bash
-# Cài lobster (nếu chưa có)
-cd /tmp && git clone https://github.com/openclaw/lobster.git && cd lobster && npm install && npx tsc -p tsconfig.json
-export PATH="$HOME/bin:$PATH"
-ln -sf /tmp/lobster/bin/lobster.js ~/bin/lobster
-lobster version
+# Process all new tasks
+python3 scripts/auto_plan.py --info
+
+# Process specific task
+python3 scripts/auto_plan.py --task-id 42349 --info
 ```
 
-## 🔑 Key Concepts
+**Action:**
+- Đọc tasks có status='new' từ SQLite
+- Move status → 'pending'
+- Output info cho AI agent
 
-- **Employee ID** = `hr.employee.id` (not user ID)
-- **Task assignment** = `project.task.user_ids` (Many2many to `res.users`)
-- All scripts use `zrise_utils.connect_zrise()` (SSL-safe)
+**Output format:**
+```
+=== TASK INFO ===
+TASK_ID: 42349
+TASK_DIR: /path/.tasks/42349
+AGENT_COUNT: 4
+IS_REPLAN: false
+--- TEXT START ---
+📋 **Task cần lên kế hoạch:**
+
+**Task ID:** 42349
+**Tên:** Viết email giới thiệu công ty
+...
+
+**Available Agents (4):**
+- sales-agent
+- eng-agent
+...
+
+---
+**Agent cần:**
+1. Đọc task data từ: `.tasks/42349/detail.json`
+2. Dùng AI phân tích task
+3. Ghi plan vào: `.tasks/42349/detail.json`
+--- TEXT END ---
+=== END TASK INFO ===
+```
+
+---
+
+### Tool 3: write_plan.py (⚠️ QUAN TRỌNG)
+
+**AI Agent ghi plan vào detail.json**
+
+```bash
+python3 scripts/write_plan.py 42349 \
+  --agent sales-agent \
+  --steps "Soạn draft email,Xem lại nội dung,Gửi email" \
+  --time "30 phút" \
+  --notes "Cần xác nhận thông tin"
+```
+
+**detail.json structure sau khi write_plan:**
+```json
+{
+  "task_id": 42349,
+  "name": "Viết email",
+  "description": "...",
+  "stage": "In Progress",
+  "status": "pending_approval",
+  "selected_agent": "sales-agent",
+  "execution_steps": ["Soạn draft email", "Xem lại", "Gửi"],
+  "estimated_time": "30 phút",
+  "plan_notes": "...",
+  "plan_created_at": "2026-03-25T18:35:00+07:00"
+}
+```
+
+---
+
+## ✅ User Approval - 3 Cases
+
+### Case 1: User đồng ý → execute
+
+```bash
+python3 scripts/approve_plan.py 42349 --action approve --notify
+```
+
+**Result:** status='approved', logs updated
+
+---
+
+### Case 2: User đồng ý nhưng đổi agent
+
+```bash
+python3 scripts/approve_plan.py 42349 --action change_agent --agent sales-agent-v2 --notify
+```
+
+**Result:** selected_agent updated in detail.json + SQLite
+
+---
+
+### Case 3: User feedback → re-plan
+
+```bash
+python3 scripts/approve_plan.py 42349 --action feedback --feedback-text "Cần thêm phần giá cả" --notify
+```
+
+**Result:**
+- Task folder bị xóa + tạo lại ở .tasks/new/ (tưởng tượng)
+- detail.json updated với: `user_feedback`, `previous_plan_attempt`, `re_plan_count`
+- SQLite status = 'new'
+
+**Auto plan sẽ thấy is_replan=true và hiển thị feedback cho user**
+
+---
+
+## 🔧 Setup
+
+### 1. Init DB
+
+```bash
+python3 scripts/db.py
+```
+
+Tạo SQLite + sync agents từ YAML.
+
+### 2. Config Credentials
+
+`~/.openclaw/openclaw.json`:
+```json
+{
+  "skills": {
+    "entries": {
+      "zrise-connect": {
+        "enabled": true,
+        "env": {
+          "ZRISE_URL": "https://zrise.app",
+          "ZRISE_DB": "zrise",
+          "ZRISE_USERNAME": "your.email@company.com",
+          "ZRISE_API_KEY": "your-api-key"
+        }
+      }
+    }
+  }
+}
+```
+
+### 3. Setup Cron
+
+```bash
+openclaw cron add \
+  --name "zrise-poll" \
+  --cron "*/5 * * * *" \
+  --agent <AGENT_ID> \
+  --session isolated \
+  --message "Poll + plan: poll_employee_work.py --once && auto_plan.py --info" \
+  --announce \
+  --channel telegram
+```
+
+---
+
+## 📦 Scripts Reference
+
+| Script | Mô tả |
+|--------|-------|
+| `db.py` | SQLite operations + detail/logs file ops |
+| `poll_employee_work.py` | Poll từ Zrise → SQLite + detail.json |
+| `auto_plan.py` | Prepare info cho AI plan |
+| `write_plan.py` | AI ghi plan vào detail.json |
+| `approve_plan.py` | Handle 3 approval cases |
+| `writeback_to_zrise.py` | Gửi kết quả lên Zrise |
+| `update_task_stage.py` | Update stage |
+| `fill_timesheet.py` | Log timesheet |
+
+---
+
+## 🐛 Troubleshooting
+
+| Vấn đề | Giải pháp |
+|---------|-----------|
+| Cron không chạy | `openclaw exec approve --pattern "poll_employee_work.py" --allow-always` |
+| Task not found | Kiểm tra SQLite: `sqlite3 .tasks/task_registry.db "SELECT * FROM tasks"` |
+| Detail.json missing | Chạy lại poll_employee_work.py |
+
+---
+
+## 📞 Paths
+
+- **DB:** `~/.openclaw/workspace-ai-company/.tasks/task_registry.db`
+- **Tasks:** `~/.openclaw/workspace-ai-company/.tasks/<task_id>/`
+- **Agent registry:** SQLite `agents` table

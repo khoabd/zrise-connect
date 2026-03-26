@@ -303,15 +303,15 @@ class TestReviewFlowEndToEnd:
         job_ids = [f"BATCH-REVIEW-{i}" for i in range(3)]
         results = []
 
-        for job_id in job_ids:
+        for idx, job_id in enumerate(job_ids):
             # Create and complete each job
             mock.create_job({
                 "id": job_id,
                 "title": f"Batch Review {job_id}",
-                "assignee": f"executor-{i}",
+                "assignee": f"executor-{idx}",
             })
-            mock.claim_job(job_id, f"executor-{i}")
-            mock.complete_job(job_id, {"output": f"output_{i}.csv"})
+            mock.claim_job(job_id, f"executor-{idx}")
+            mock.complete_job(job_id, {"output": f"output_{idx}.csv"})
 
             # Submit for review
             mock.update_job(job_id, {"status": "pending_review"})

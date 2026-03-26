@@ -266,6 +266,7 @@ class TestJobStateTransitions:
 
     def test_invalid_transition_pending_to_done(self, test_db):
         """Test invalid: pending -> done (should require going through in_progress)."""
+        from helpers import safe_transition_job
         cursor = test_db.cursor()
         cursor.execute(
             "INSERT INTO jobs (id, title, status) VALUES (?, ?, ?)",
@@ -273,18 +274,14 @@ class TestJobStateTransitions:
         )
 
         # Try direct transition (should not work)
-        cursor.execute(
-            "UPDATE jobs SET status = 'done' WHERE id = ? AND status = ?",
-            ("JOB-TRANS-2", "pending"),
-        )
-        test_db.commit()
-
-        cursor.execute("SELECT status FROM id = ?", ("JOB-TRANS-2",))
-        # This test documents expected behavior
-        # In real implementation, only transitions through valid states work
+        safe_transition_job(test_db, "JOB-TRANS-2", "done")
+        # Job should still be in pending
+        cursor.execute("SELECT status FROM jobs WHERE id = ?", ("JOB-TRANS-2",))
+        assert cursor.fetchone()["status"] == "pending"
 
     def test_cannot_complete_unclaimed_job(self, test_db):
         """Test that completed jobs must be claimed first."""
+        from helpers import safe_transition_job
         cursor = test_db.cursor()
         cursor.execute(
             "INSERT INTO jobs (id, title, status) VALUES (?, ?, ?)",
@@ -292,12 +289,10 @@ class TestJobStateTransitions:
         )
 
         # Try to complete without claiming (in_progress state required)
-        cursor.execute(
-            "UPDATE jobs SET status = 'done' WHERE id = ? AND status = ?",
-            ("JOB-TRANS-3", "assigned"),
-        )
-        test_db.commit()
-
+        safe_transition_job(test_db, "JOB-TRANS-3", "done")
+        # Job should still be in assigned
+        cursor.execute("SELECT status FROM jobs WHERE id = ?", ("JOB-TRANS-3",))
+        assert cursor.fetchone()["status"] == "assigned"
         # Job should still be in assigned state
         cursor.execute("SELECT status FROM jobs WHERE id = ?", ("JOB-TRANS-3",))
         assert cursor.fetchone()["status"] == "assigned"

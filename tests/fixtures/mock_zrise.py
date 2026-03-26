@@ -60,6 +60,10 @@ class MockZriseConnection:
             "assignee": job_data.get("assignee"),
             "created_at": time.time(),
         }
+        # Preserve additional fields like priority and metadata
+        for key in ["priority", "metadata", "description", "result"]:
+            if key in job_data:
+                job[key] = job_data[key]
         self._jobs[job_id] = job
         return job
 

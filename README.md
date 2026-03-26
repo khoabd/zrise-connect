@@ -1,332 +1,153 @@
-# Zrise Connect
+# zrise-connect v3.4.0
 
-**Zrise Connect** - Tự động hóa tasks trên Zrise bằng AI workflows.
+Kết nối và vận hành Zrise qua XML-RPC API với AI workflow automation.
 
-## 🎯 Features
+## 🎯 Mục đích
 
-- ✅ **Workflow Management** — Tạo, sửa, xóa workflows qua Web UI
-- ✅ **AI-Powered** — Xử lý tasks bằng OpenClaw Agent
-- ✅ **8-Step Flow** — Poll → Analyze → Execute → Review → Writeback
-- ✅ **Session Management** — Mỗi task có session riêng
-- ✅ **Clarification Flow** — Tự động request info khi thiếu
-- ✅ **HTML Comments** — Format đẹp trên Zrise
-- ✅ **Permission Control** — Private/Team/Public workflows
-- ✅ **10+ Templates** — Ready-to-use workflow templates
+- Tự động hóa xử lý task Zrise qua Lobster workflows
+- AI phân tích, lên plan, execute và writeback kết quả
+- Poll task pending tự động (cron)
+- Integration với Telegram notifications
 
----
+## 📋 Quick Start
 
-## 🚀 Quick Start
+### 1. Setup Credentials
 
-### 1. Start Web UI
+Config trong `~/.openclaw/openclaw.json`:
+
+```json
+{
+  "skills": {
+    "entries": {
+      "zrise-connect": {
+        "enabled": true,
+        "env": {
+          "ZRISE_URL": "https://zrise.app",
+          "ZRISE_DB": "zrise",
+          "ZRISE_USERNAME": "your.email@company.com",
+          "ZRISE_API_KEY": "your-api-key"
+        }
+      }
+    }
+  }
+}
+```
+
+### 2. Test Connection
 
 ```bash
-cd skills/zrise-connect/scripts
-python3 workflow_manager_ui.py --port 8888
+cd /Users/khoabui/.openclaw/workspace-ai-company/skills/zrise-connect/scripts
+python3 zrise_utils.py
 ```
 
-**Access:** http://localhost:8888
-
-### 2. Test Simple Workflow
+### 3. Tìm Employee ID
 
 ```bash
-python3 test_simple_workflow.py --task-id 42174 --approve
+python3 -c "
+import sys; sys.path.insert(0, '.')
+from zrise_utils import connect_zrise
+db, uid, secret, models, url = connect_zrise()
+emp = models.execute_kw(db, uid, secret, 'hr.employee', 'search_read',
+    [[('user_id', '=', uid)]], {'fields': ['id', 'name']})
+print(f'Employee ID: {emp[0][\"id\"]}' if emp else 'Not found')
+"
 ```
 
-### 3. View Result
-
-```
-https://zrise.app/web#id=42174
-```
-
----
-
-## 📊 Architecture
-
-```
-┌─────────────────────────────────────────────┐
-│  Employee (Web UI / Telegram)               │
-└─────────────────────────────────────────────┘
-                    ↓
-┌─────────────────────────────────────────────┐
-│  Workflow Manager UI (port 8888)            │
-│  - Create/Edit/Delete workflows             │
-│  - Test workflows                           │
-│  - Share with team                          │
-└─────────────────────────────────────────────┘
-                    ↓
-┌─────────────────────────────────────────────┐
-│  Workflow Registry (registry.json)          │
-│  - 10+ workflow templates                   │
-│  - Categories: general, analysis, dev, qa   │
-└─────────────────────────────────────────────┘
-                    ↓
-┌─────────────────────────────────────────────┐
-│  OpenClaw Agent (zrise-analyst/dev/qa/pm)   │
-│  - Process tasks with AI                    │
-│  - Generate structured output               │
-└─────────────────────────────────────────────┘
-                    ↓
-┌─────────────────────────────────────────────┐
-│  Zrise Integration                          │
-│  - Post HTML comments                       │
-│  - Update task stage                        │
-│  - Save conversation history                │
-└─────────────────────────────────────────────┘
-```
-
----
-
-## 📁 Project Structure
-
-```
-skills/zrise-connect/
-├── scripts/                    # Core scripts (34 files)
-│   ├── workflow_manager_ui.py  # Web UI
-│   ├── workflow_manager.py     # CLI manager
-│   ├── workflow_registry.py    # Registry
-│   ├── invoke_agent_for_task.py # Agent wrapper
-│   ├── test_simple_workflow.py # E2E test
-│   ├── post_html_comment.py    # HTML comments
-│   ├── configure_openclaw_agent.py # Agent setup
-│   ├── analyze_task.py         # Task analysis
-│   ├── execute_ai_task.py      # Task execution
-│   ├── request_clarification.py # Clarification flow
-│   ├── poll_employee_work.py   # Poll tasks
-│   └── ... (more scripts)
-│
-├── workflows/                  # Lobster workflows
-│   ├── general.lobster
-│   ├── email-draft.lobster
-│   ├── requirement-analysis.lobster
-│   └── zrise-execute.lobster
-│
-├── docs/                       # Documentation
-│   ├── WORKFLOW_TEMPLATES.md
-│   ├── WORKFLOW_UI_COMPLETE.md
-│   ├── TELEGRAM_INTEGRATION.md
-│   ├── TEAM_ONBOARDING.md
-│   └── WORKFLOW_UI_DESIGN.md
-│
-├── state/                      # Runtime state
-│   ├── zrise/
-│   │   ├── sessions/           # Session state
-│   │   ├── poll-state/         # Poll state
-│   │   ├── work-items/         # Work items
-│   │   └── test-reports/       # Test results
-│   └── approvals/              # Approval requests
-│
-├── config/                     # Configuration
-│   └── zrise/
-│       └── agent-routing.json  # Agent definitions
-│
-├── SKILL.md                    # Skill documentation
-├── skill.json                  # Skill manifest
-└── README.md                   # This file
-```
-
----
-
-## 📚 Available Workflows
-
-| Workflow | Purpose | Category |
-|----------|---------|----------|
-| `general` | Xử lý task tổng quát | general |
-| `email-draft` | Soạn email | communication |
-| `requirement-analysis` | Phân tích requirement | analysis |
-| `technical-design` | Thiết kế kỹ thuật | design |
-| `implementation` | Implementation plan | development |
-| `code-review` | Review code | review |
-| `testing` | Test plan | qa |
-| `documentation` | Tạo docs | docs |
-| `pm-planning` | PM planning | pm |
-| `clarification-request` | Request info | clarification |
-
----
-
-## 🔧 Configuration
-
-### Environment Variables (.env)
+### 4. Poll Task Pending
 
 ```bash
-# Zrise Connection
-ZRISE_URL=https://zrise.app
-ZRISE_DB=zrise
-ZRISE_USERNAME=admin
-ZRISE_API_KEY=your_api_key
-
-# OpenClaw Agents (optional)
-GEMINI_API_KEY=your_gemini_key
-GEMINI_MODEL=gemini-2.5-flash
+python3 poll_employee_work.py --employee-id <ID> --limit 10 --json
 ```
 
-### Agent Configuration
+### 5. Chạy Workflow
 
 ```bash
-# Setup agents
-python3 configure_openclaw_agent.py --setup
-
-# Check configuration
-python3 configure_openclaw_agent.py --check
+lobster run workflows/zrise-execute.lobster \
+  --args-json '{"task_id": <TASK_ID>, "user_message": "xử lý task này"}'
 ```
 
----
+## 🔄 Workflow Flow
 
-## 🧪 Testing
+```
+1. Fetch task từ Zrise → .tasks/<id>/task.json
+2. AI phân tích intent + lên plan → plan.json
+3. Post plan lên Zrise (mail.compose.message)
+4. Stage → In Process
+   ⏸️ APPROVAL: Review plan
+5. AI execute task → result.md
+   ⏸️ APPROVAL: Review kết quả
+6. Writeback result → Timesheet → Stage: Done
+```
 
-### E2E Tests (48 tests, 91.7% pass)
+## 📦 Scripts
+
+| Script | Chức năng |
+|--------|-----------|
+| `fetch_task_data.py` | Lấy task data từ Zrise |
+| `analyze_task.py` | Phân tích intent, chọn agent, tạo plan |
+| `execute_ai_task.py` | Execute via LLM (openclaw.invoke) |
+| `writeback_to_zrise.py` | Post plan/result lên Zrise |
+| `update_task_stage.py` | Update stage (New → In Process → Done) |
+| `fill_timesheet.py` | Log timesheet |
+| `poll_employee_work.py` | Poll task pending (cron) |
+| `zrise_utils.py` | Common utilities (SSL-safe) |
+
+## ⏰ Cron Setup
+
+Poll tự động mỗi 1 phút:
 
 ```bash
-# Run all E2E tests
-python3 zrise_e2e_test.py --all --task-id 42174
+# Setup crontab
+(crontab -l 2>/dev/null; echo "* * * * * /Users/khoabui/.openclaw/workspace-ai-company/skills/zrise-connect/scripts/zrise-poll-cron.sh 10 /tmp/zrise-poll-latest.json") | crontab -
 
-# Run session tests
-python3 zrise_session_e2e_test.py --task-id 42174
-
-# Run simple workflow test
-python3 test_simple_workflow.py --task-id 42174 --approve
+# Kiểm tra
+crontab -l
+tail -f /tmp/zrise-poll.log
 ```
 
-### Test Results
+## 🤖 Agent Routing
 
-```
-Step E2E Tests:    32 tests, 29 passed (90.6%)
-Session E2E Tests: 16 tests, 15 passed (93.8%)
-Total:             48 tests, 44 passed (91.7%)
-```
+| Workflow | Agent | Use Case |
+|----------|-------|----------|
+| requirement-analysis | demo-ba | Checklist, BRD, user story |
+| email-draft | ai-company | Soạn email, thông báo |
+| technical-design | demo-architect | Architecture, API design |
+| development | demo-be | Code, fix bug |
+| testing | demo-qc | Test case, QA |
+| general | ai-company | Mặc định |
 
----
+## ⚠️ Lưu ý quan trọng
 
-## 📖 Documentation
+1. **PHẢI dùng Lobster workflow** — Không tự generate/post kết quả
+2. **Timesheet TRƯỚC stage Done** — Zrise bắt buộc
+3. **Approval 2 bước** — Plan + Result
+4. **SSL verification disabled** — Fix cho macOS Python 3.11
 
-### For Users
+## 📚 Docs
 
-- **[Team Onboarding](docs/TEAM_ONBOARDING.md)** — Hướng dẫn cho nhân viên mới
-- **[Workflow Templates](docs/WORKFLOW_TEMPLATES.md)** — Library of templates
-- **[Workflow UI Guide](docs/WORKFLOW_UI_COMPLETE.md)** — How to use Web UI
+- [WORKFLOW_TEMPLATES.md](docs/WORKFLOW_TEMPLATES.md)
+- [TELEGRAM_INTEGRATION.md](docs/TELEGRAM_INTEGRATION.md)
+- [TEAM_ONBOARDING.md](docs/TEAM_ONBOARDING.md)
+- [AGENT_ROUTING.md](docs/AGENT_ROUTING.md)
 
-### For Developers
+## 🔧 Troubleshooting
 
-- **[Telegram Integration](docs/TELEGRAM_INTEGRATION.md)** — Setup Telegram bot
-- **[Workflow Design](docs/WORKFLOW_UI_DESIGN.md)** — Architecture & design
-- **[SKILL.md](SKILL.md)** — Technical documentation
-
----
-
-## 🛠️ Common Tasks
-
-### Create Custom Workflow
-
-```bash
-# Via CLI
-python3 workflow_manager.py --create \
-  --name "my-workflow" \
-  --description "My custom workflow" \
-  --category "custom" \
-  --file my-workflow.yaml
-
-# Via Web UI
-open http://localhost:8888
-# Click "+ New Workflow"
+**SSL Certificate Error:**
+```python
+# Đã fix trong zrise_utils.py
+_ssl_ctx = ssl._create_unverified_context()
 ```
 
-### Post HTML Comment
+**Exec Approval Timeout:**
+- Setup từ terminal thay vì Telegram
+- Dùng `/approve allow-always` cho session
 
-```bash
-python3 post_html_comment.py \
-  --task-id 42174 \
-  --title "Analysis Result" \
-  --content "**Bold** and *italic* text"
-```
+**Employee Not Found:**
+- Kiểm tra user_id linked với hr.employee
+- Verify username trong config
 
-### List Workflows
+## 📞 Support
 
-```bash
-python3 workflow_registry.py --list
-```
-
----
-
-## 🐛 Troubleshooting
-
-### Workflow không chạy?
-
-```bash
-# Check workflow exists
-python3 workflow_registry.py --search "workflow-name"
-
-# Check task exists
-python3 fetch_task_data.py 42174
-
-# Check logs
-tail -f state/zrise/logs/*.log
-```
-
-### Comment không hiện?
-
-```bash
-# Test HTML format
-python3 post_html_comment.py --task-id 42174 --title "Test" --content "Test" --test
-
-# Check Zrise connection
-python3 -c "from zrise_utils import connect_zrise; print(connect_zrise())"
-```
-
-### Agent không work?
-
-```bash
-# Check agent config
-python3 configure_openclaw_agent.py --check
-
-# Re-setup agents
-python3 configure_openclaw_agent.py --setup
-```
-
----
-
-## 📊 Stats
-
-- **Scripts:** 34 files
-- **Workflows:** 10+ templates
-- **Tests:** 48 tests, 91.7% pass
-- **UI Port:** 8888
-- **Agents:** 4 (analyst, dev, qa, pm)
-
----
-
-## 🤝 Contributing
-
-### Add New Workflow
-
-1. Create `.lobster` file in `workflows/`
-2. Add prompt to `invoke_agent_for_task.py`
-3. Register: `python3 workflow_manager.py --create ...`
-4. Test: `python3 test_simple_workflow.py --task-id X`
-5. Document in `docs/WORKFLOW_TEMPLATES.md`
-
-### Report Issues
-
-1. Check existing docs
-2. Run diagnostics
-3. Create issue with:
-   - Steps to reproduce
-   - Expected vs actual
-   - Logs/screenshots
-
----
-
-## 📝 License
-
-MIT License
-
----
-
-## 🎉 Credits
-
-- **OpenClaw** — Agent framework
-- **Lobster** — Workflow orchestration
-- **Zrise** — Task management
-- **Gemini** — AI model (optional)
-
----
-
-**Zrise Connect - Automate your tasks with AI!** 🚀
+- Skill path: `~/.openclaw/workspace-ai-company/skills/zrise-connect/`
+- State: `~/.openclaw/workspace-ai-company/state/zrise/`
+- Logs: `/tmp/zrise-poll.log`

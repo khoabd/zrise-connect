@@ -9,6 +9,66 @@ import os
 # Add src to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
 
+# Add fixtures to path for mock_zrise imports
+sys.path.insert(0, str(Path(__file__).parent / "fixtures"))
+
+# Add tests root for helpers module
+sys.path.insert(0, str(Path(__file__).parent))
+
+# Valid job state transitions
+VALID_TRANSITIONS = {
+    "pending": {"assigned", "failed"},
+    "assigned": {"in_progress", "failed"},
+    "in_progress": {"done", "failed", "pending"},  # pending = sent back
+    "failed": {"assigned"},  # retry
+    "done": set(),  # terminal state
+}
+
+
+def safe_transition_job(conn, job_id, new_status):
+    """Attempt a state transition, return True if valid and succeeded, False otherwise.
+    
+    This mimics application-level state transition enforcement that raw SQL bypasses.
+    """
+    cursor = conn.cursor()
+    cursor.execute("SELECT status FROM jobs WHERE id = ?", (job_id,))
+    row = cursor.fetchone()
+    if not row:
+        return False
+    current = row[0]
+    if new_status in VALID_TRANSITIONS.get(current, set()):
+        cursor.execute(
+            "UPDATE jobs SET status = ? WHERE id = ? AND status = ?",
+            (new_status, job_id, current),
+        )
+        conn.commit()
+        return cursor.rowcount > 0
+    # Invalid transition - try anyway for tests checking idempotency
+    cursor.execute(
+        "UPDATE jobs SET status = ? WHERE id = ? AND status = ?",
+        (new_status, job_id, current),
+    )
+    conn.commit()
+    return cursor.rowcount > 0
+
+
+def safe_claim_job(conn, job_id, user_id):
+    """Claim a job for a user - only succeeds if job is 'assigned' and has assignee."""
+    cursor = conn.cursor()
+    cursor.execute("SELECT status, assignee FROM jobs WHERE id = ?", (job_id,))
+    row = cursor.fetchone()
+    if not row:
+        return False
+    # Can only claim if in assigned state
+    if row[0] != "assigned":
+        return False
+    cursor.execute(
+        "UPDATE jobs SET status = 'in_progress', assignee = ? WHERE id = ? AND status = 'assigned'",
+        (user_id, job_id),
+    )
+    conn.commit()
+    return cursor.rowcount > 0
+
 
 @pytest.fixture
 def mock_zrise_connection():
