@@ -4,10 +4,6 @@ Hướng dẫn setup cron để poll task tự động từ Zrise.
 
 **Docs:** https://docs.openclaw.ai/automation/cron-jobs
 
-## ⚠️ TẠI SAO CẦN CRON?
-
-Không có cron → agent không bao giờ biết có task mới từ Zrise.
-
 ## ⚠️ QUY TẮC SỐ 1: LUÔN DÙNG `--agent`
 
 ```bash
@@ -21,70 +17,56 @@ openclaw cron add \
   ...
 ```
 
-**Tìm agent ID:** Xem trong `~/.openclaw/openclaw.json` hoặc hỏi admin.
+## ⚠️ QUY TẮC SỐ 2: DELIVERY PHẢI LÀ "none"
 
-## CÁCH 1: openclaw cron add (Recommended)
+**KHI SCRIPT exit SILENT (không có output), delivery mode phải là `none`!**
+
+Nếu dùng `announce`:
+- Script exit silent → cron gửi "Script chạy thành công, không có task mới" → **SPAM**
+
+### Tạo cron đúng cho zrise-connect:
 
 ```bash
+# Tạo cron với default delivery (sẽ là announce)
 openclaw cron add \
   --name "zrise-poll" \
-  --cron "*/5 * * * *" \
-  --tz "Asia/Ho_Chi_Minh" \
+  --cron "* * * * *" \
   --agent <AGENT_ID> \
   --session isolated \
-  --message "Poll task từ Zrise. Dùng poll_employee_work.py trong skill zrise-connect. Sau khi poll xong, báo số task mới trong registry." \
-  --announce \
-  --channel telegram
+  --message "cd ~/.openclaw/workspace-ai-company/skills/zrise-connect && python3 scripts/poll_employee_work.py --once"
 
-# Verify
-openclaw cron list
-openclaw cron run <job-id>  # Test ngay
-openclaw cron runs --id <job-id>  # Xem lịch sử
+# SAU ĐÓ: Sửa delivery mode thành "none" trong jobs.json
+python3 -c "
+import json
+with open('/Users/khoabui/.openclaw/cron/jobs.json') as f:
+    d = json.load(f)
+for job in d.get('jobs', []):
+    if 'zrise' in job.get('name', ''):
+        job['delivery']['mode'] = 'none'
+with open('/Users/khoabui/.openclaw/cron/jobs.json', 'w') as f:
+    json.dump(d, f, indent=2)
+print('Fixed!')
+"
 ```
 
-### Session Types
-
-| Type | Mô tả |
-|------|--------|
-| `isolated` | Mỗi run là session mới |
-| `session:zrise-poll` | Persistent session, giữ context |
-
-### Delivery Modes
-
-| Mode | Mô tả |
-|------|--------|
-| `announce` | Gửi summary về chat |
-| `webhook` | POST JSON đến URL |
-| `none` | Internal only |
-
-## CÁCH 2: Custom Persistent Session
-
-Giữ context giữa các lần chạy — tránh duplicate:
+### Verify:
 
 ```bash
-openclaw cron add \
-  --name "zrise-poll-persistent" \
-  --cron "*/5 * * * *" \
-  --agent <AGENT_ID> \
-  --session "session:zrise-poll" \
-  --message "Poll task từ Zrise..." \
-  --announce \
-  --channel telegram
+openclaw cron list --json | python3 -c "import json,sys; [print(j['name'], j['delivery']['mode']) for j in json.load(sys.stdin)['jobs']]"
 ```
 
-## ⚠️ EXEC APPROVAL
+## Cron Jobs Cần Thiết Lập
 
-Nếu cron bị block:
-
-```bash
-openclaw exec approve --pattern "poll_employee_work.py" --allow-always
-```
+| Name | Schedule | Script | Delivery |
+|------|----------|--------|----------|
+| zrise-poll | `* * * * *` | poll_employee_work.py | none |
+| zrise-auto-plan | `*/5 * * * *` | auto_plan.py | none |
 
 ## MANAGE
 
 ```bash
 openclaw cron list              # Liệt kê tất cả
-openclaw cron runs --id <id>    # Lịch sử
+openclaw cron list --json       # Xem delivery mode
 openclaw cron run <id>          # Chạy ngay
 openclaw cron delete <id>       # Xóa
 ```
@@ -93,11 +75,10 @@ openclaw cron delete <id>       # Xóa
 
 | Vấn đề | Giải pháp |
 |---------|-----------|
+| Spam tin nhắn | Kiểm tra `delivery.mode` phải là `none` |
 | Cron không chạy | Approve exec: `openclaw exec approve --pattern "poll_employee_work.py" --allow-always` |
 | Không thấy task mới | Kiểm tra `--employee-id` đúng chưa |
-| Cron chạy bằng main agent | Thêm `--agent <AGENT_ID>` khi tạo cron |
 
 ## 📚 THAM KHẢO
 
 - **Cron Jobs:** https://docs.openclaw.ai/automation/cron-jobs
-- **Cron vs Heartbeat:** https://docs.openclaw.ai/automation/cron-vs-heartbeat
