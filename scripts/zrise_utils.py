@@ -11,13 +11,14 @@ Usage:
 """
 import json
 import pathlib
+import socket
 import ssl
+import time
 import xmlrpc.client
+import urllib3.exceptions
 
-# SSL context for macOS Python
-_ssl_ctx = ssl.create_default_context()
-_ssl_ctx.check_hostname = False
-_ssl_ctx.verify_mode = ssl.CERT_NONE
+# SSL context for macOS Python - disable verification
+_ssl_ctx = ssl._create_unverified_context()
 
 # Workspace markers — directories/files that indicate a workspace root
 _WORKSPACE_MARKERS = [
@@ -107,13 +108,20 @@ def load_json(path):
         return json.load(f)
 
 
-def connect_zrise():
+def connect_zrise(max_retries=3, timeout=30):
     """
     Connect to Zrise via XML-RPC.
+
+    Args:
+        max_retries: Maximum number of retry attempts (default: 3)
+        timeout: Socket timeout in seconds (default: 30)
 
     Returns:
         tuple: (db, uid, secret, models, zrise_url)
     """
+    # Set default socket timeout
+    socket.setdefaulttimeout(timeout)
+
     config_path = get_openclaw_config_path()
     cfg = load_json(config_path)
 
@@ -128,14 +136,26 @@ def connect_zrise():
     if secret is not None:
         secret = str(secret)
 
-    common = xmlrpc.client.ServerProxy(url + '/xmlrpc/2/common', allow_none=True, context=_ssl_ctx)
-    uid = common.authenticate(db, username, secret, {})
+    # Retry logic for transient failures
+    last_error = None
+    for attempt in range(1, max_retries + 1):
+        try:
+            common = xmlrpc.client.ServerProxy(url + '/xmlrpc/2/common', allow_none=True, context=_ssl_ctx)
+            uid = common.authenticate(db, username, secret, {})
 
-    if not uid:
-        raise SystemExit('❌ Zrise authentication failed')
+            if not uid:
+                raise SystemExit('❌ Zrise authentication failed')
 
-    models = xmlrpc.client.ServerProxy(url + '/xmlrpc/2/object', allow_none=True, context=_ssl_ctx)
-    return db, uid, secret, models, url
+            models = xmlrpc.client.ServerProxy(url + '/xmlrpc/2/object', allow_none=True, context=_ssl_ctx)
+            return db, uid, secret, models, url
+
+        except (socket.timeout, socket.error, urllib3.exceptions.HTTPError, OSError) as e:
+            last_error = e
+            if attempt < max_retries:
+                time.sleep(2 ** attempt)  # Exponential backoff
+            continue
+
+    raise SystemExit(f'❌ Zrise connection failed after {max_retries} retries: {last_error}')
 
 
 def get_state_path(subpath=''):
