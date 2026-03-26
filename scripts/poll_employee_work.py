@@ -33,8 +33,14 @@ def get_openclaw_config_path():
 def is_done(stage_name):
     return any(kw in (stage_name or '').lower() for kw in DONE_KEYWORDS)
 
-def poll_tasks(employee_id, limit=20):
-    """Poll tasks from Zrise, trả về dict với new_tasks."""
+def poll_tasks(employee_id, limit=20, sync=False):
+    """Poll tasks from Zrise, trả về dict với new_tasks.
+    
+    Args:
+        employee_id: Employee ID to poll for
+        limit: Max tasks to fetch
+        sync: If True, sync ALL tasks (including already-seen) to catch up on missed tasks
+    """
     # Init DB
     init_db()
     
@@ -43,7 +49,7 @@ def poll_tasks(employee_id, limit=20):
 
     env = cfg['skills']['entries']['zrise-connect']['env']
     url = env['ZRISE_URL'].rstrip('/')
-    db = env['ZRISE_DB']
+    db_name = env['ZRISE_DB']
     username = env['ZRISE_USERNAME']
     secret = env.get('ZRISE_API_KEY') or env.get('ZRISE_PASSWORD')
 
@@ -51,26 +57,26 @@ def poll_tasks(employee_id, limit=20):
         secret = str(secret)
 
     common = xmlrpc.client.ServerProxy(url + '/xmlrpc/2/common', allow_none=True, context=_ssl_ctx)
-    uid = common.authenticate(db, username, secret, {})
+    uid = common.authenticate(db_name, username, secret, {})
 
     if not uid:
         print("❌ Zrise authentication failed")
-        return {"new_tasks": [], "all_tasks": []}
+        return {"new_tasks": [], "all_tasks": [], "synced": 0}
 
     models = xmlrpc.client.ServerProxy(url + '/xmlrpc/2/object', allow_none=True, context=_ssl_ctx)
 
     # Find employee
-    employees = models.execute_kw(db, uid, secret, 'hr.employee', 'search_read',
+    employees = models.execute_kw(db_name, uid, secret, 'hr.employee', 'search_read',
                                  [[('user_id', '=', uid)]],
                                  {'fields': ['id', 'name']})
     
     if not employees:
         print(f"❌ Không tìm thấy employee cho user ID {uid}")
-        return {"new_tasks": [], "all_tasks": []}
+        return {"new_tasks": [], "all_tasks": [], "synced": 0}
     
     # Get tasks from Zrise
     try:
-        tasks = models.execute_kw(db, uid, secret, 'project.task', 'search_read',
+        tasks = models.execute_kw(db_name, uid, secret, 'project.task', 'search_read',
                                  [[('user_ids', 'in', [uid])]],
                                  {'fields': ['id', 'name', 'description', 'stage_id', 
                                             'project_id', 'date_deadline', 'priority',
@@ -78,10 +84,11 @@ def poll_tasks(employee_id, limit=20):
                                   'limit': limit, 'order': 'id desc'})
     except Exception as e:
         print(f"search_read failed: {e}")
-        return {"new_tasks": [], "all_tasks": []}
+        return {"new_tasks": [], "all_tasks": [], "synced": 0}
     
     new_tasks = []
     all_tasks = []
+    synced_count = 0
     
     for task in tasks:
         task_id = task['id']
@@ -97,7 +104,26 @@ def poll_tasks(employee_id, limit=20):
         existing = get_task(task_id)
         
         if existing:
-            # Task đã tồn tại - bỏ qua
+            # Task đã tồn tại - kiểm tra nếu cần sync
+            if sync:
+                # Update task info trong detail.json
+                task_data = {
+                    "task_id": task_id,
+                    "name": task.get('name', ''),
+                    "description": task.get('description', ''),
+                    "stage": stage_name,
+                    "project": task.get('project_id'),
+                    "priority": task.get('priority'),
+                    "deadline": task.get('date_deadline'),
+                    "fetched_at": datetime.now().isoformat(),
+                    "synced_at": datetime.now().isoformat()
+                }
+                save_task_detail(task_id, task_data)
+                add_task_log(task_id, "task_synced", "system", {
+                    "source": "zrise_sync",
+                    "stage": stage_name
+                })
+                synced_count += 1
             continue
         
         # Task mới - tạo trong DB + detail.json
@@ -126,7 +152,7 @@ def poll_tasks(employee_id, limit=20):
         
         # Add log
         add_task_log(task_id, "task_fetched", "system", {
-            "source": "zrise_poll",
+            "source": "zrise_poll" if not sync else "zrise_sync",
             "stage": stage_name
         })
         
@@ -135,32 +161,66 @@ def poll_tasks(employee_id, limit=20):
     return {
         "new_tasks_count": len(new_tasks),
         "new_tasks": [{'id': t['id'], 'name': t['name']} for t in new_tasks],
-        "all_tasks_count": len(all_tasks)
+        "all_tasks_count": len(all_tasks),
+        "synced": synced_count
     }
+
+def auto_detect_employee_id():
+    """Tự động lấy employee ID từ Zrise session (user đang login)."""
+    from zrise_utils import connect_zrise
+    
+    db_name, uid, secret, models, url = connect_zrise()
+    
+    # Tìm employee của user đang login
+    employees = models.execute_kw(db_name, uid, secret, 'hr.employee', 'search_read',
+                                 [[('user_id', '=', uid)]],
+                                 {'fields': ['id', 'name']})
+    
+    if employees:
+        emp_id = employees[0]['id']
+        emp_name = employees[0]['name']
+        print(f"🔍 Auto-detected employee: {emp_name} (ID: {emp_id})")
+        return emp_id
+    
+    return None
 
 def main():
     import argparse
     
     parser = argparse.ArgumentParser(description='Poll tasks from Zrise for employee')
-    parser.add_argument('--employee-id', type=int, required=True)
-    parser.add_argument('--limit', type=int, default=20)
+    parser.add_argument('--employee-id', type=int, help='Employee ID (auto-detected if not provided)')
+    parser.add_argument('--limit', type=int, default=20, help='Max tasks to fetch (default: 20)')
+    parser.add_argument('--sync', action='store_true', help='Sync ALL tasks from Zrise (catch up on missed tasks after restart)')
     parser.add_argument('--json', action='store_true')
     parser.add_argument('--once', action='store_true')
     
     args = parser.parse_args()
     
+    # Auto-detect employee_id nếu không cung cấp
+    employee_id = args.employee_id
+    if employee_id is None:
+        print("ℹ️ Không có --employee-id, đang tự động phát hiện...")
+        employee_id = auto_detect_employee_id()
+        if employee_id is None:
+            print("❌ Không tìm được employee ID. Cần thiết lập Zrise credentials trong openclaw.json")
+            sys.exit(1)
+    
     result = poll_tasks(
-        employee_id=args.employee_id,
-        limit=args.limit
+        employee_id=employee_id,
+        limit=args.limit,
+        sync=args.sync
     )
     
     if args.json:
         print(json.dumps(result, indent=2, ensure_ascii=False))
     else:
+        synced = result.get('synced', 0)
         if result['new_tasks_count'] > 0:
             print(f"📋 Có {result['new_tasks_count']} task mới:")
             for t in result['new_tasks']:
                 print(f"   • [{t['id']}] {t['name']}")
+        elif synced > 0:
+            print(f"🔄 Đã sync {synced} task(s) từ Zrise")
         else:
             print("ℹ️ Không có task mới")
 
