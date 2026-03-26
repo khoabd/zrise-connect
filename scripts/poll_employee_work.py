@@ -177,10 +177,7 @@ def auto_detect_employee_id():
                                  {'fields': ['id', 'name']})
     
     if employees:
-        emp_id = employees[0]['id']
-        emp_name = employees[0]['name']
-        print(f"🔍 Auto-detected employee: {emp_name} (ID: {emp_id})")
-        return emp_id
+        return employees[0]['id']
     
     return None
 
@@ -199,10 +196,9 @@ def main():
     # Auto-detect employee_id nếu không cung cấp
     employee_id = args.employee_id
     if employee_id is None:
-        print("ℹ️ Không có --employee-id, đang tự động phát hiện...")
         employee_id = auto_detect_employee_id()
         if employee_id is None:
-            print("❌ Không tìm được employee ID. Cần thiết lập Zrise credentials trong openclaw.json")
+            # Silent exit - can't work without credentials
             sys.exit(1)
     
     result = poll_tasks(
@@ -211,18 +207,15 @@ def main():
         sync=args.sync
     )
     
-    if args.json:
-        print(json.dumps(result, indent=2, ensure_ascii=False))
-    else:
-        synced = result.get('synced', 0)
-        if result['new_tasks_count'] > 0:
-            print(f"📋 Có {result['new_tasks_count']} task mới:")
-            for t in result['new_tasks']:
-                print(f"   • [{t['id']}] {t['name']}")
-        elif synced > 0:
-            print(f"🔄 Đã sync {synced} task(s) từ Zrise")
-        else:
-            print("ℹ️ Không có task mới")
+    # Only output if there ARE new tasks or sync happened
+    # Otherwise silent exit - no agent needs to think
+    if result['new_tasks_count'] > 0:
+        print(f"📋 Có {result['new_tasks_count']} task mới:")
+        for t in result['new_tasks']:
+            print(f"   • [{t['id']}] {t['name']}")
+    elif result.get('synced', 0) > 0:
+        print(f"🔄 Đã sync {result['synced']} task(s) từ Zrise")
+    # else: silent - no output, no agent call needed
 
 if __name__ == '__main__':
     main()

@@ -208,12 +208,11 @@ def process_all_planning_tasks():
     all_tasks = new_tasks + replan_tasks
     
     if not all_tasks:
-        # Spam control: don't report "no tasks" if we reported within last 15 min
-        if _should_skip_no_tasks_message():
-            sys.exit(0)  # Silent exit
-        _set_last_no_tasks_time()
-        print("ℹ️ Không có task cần plan (new hoặc re-plan)")
-        sys.exit(0)
+        # Silent exit - no output, no agent call needed
+        # Only report if we haven't skipped recently (for logging purposes)
+        if not _should_skip_no_tasks_message():
+            _set_last_no_tasks_time()
+        sys.exit(0)  # Silent - no print, no agent needs to think
     
     agents = get_all_agents()
     results = []
@@ -308,9 +307,8 @@ def main():
         # Process all tasks needing planning (new + re-plan)
         result = process_all_planning_tasks()
         
-        if result['status'] == 'no_new_tasks':
-            # Already handled in process_all_planning_tasks with spam control
-            sys.exit(0)
+        # process_all_planning_tasks() exits silently if no tasks
+        # Only reach here if there ARE tasks
         
         if args.json:
             print(json.dumps(result, indent=2, ensure_ascii=False))
@@ -319,16 +317,18 @@ def main():
                 print_task_info(task)
                 print()
         else:
+            # Default output for agent to consume
             new_c = result.get('new_count', 0)
             replan_c = result.get('replan_count', 0)
-            if new_c > 0 or replan_c > 0:
-                print(f"✅ Đã move {result['count']} task(s) sang pending:")
-                if new_c > 0:
-                    print(f"   📋 New tasks: {new_c}")
-                if replan_c > 0:
-                    print(f"   🔄 Re-plan tasks: {replan_c}")
+            print(f"✅ Có {result['count']} task(s) cần plan:")
+            if new_c > 0:
+                print(f"   📋 New: {new_c}")
+            if replan_c > 0:
+                print(f"   🔄 Re-plan: {replan_c}")
             print()
-            print("Dùng --info để xem chi tiết từng task cho AI agent")
+            # Output first task for agent
+            if result['tasks']:
+                print_task_info(result['tasks'][0])
 
 if __name__ == '__main__':
     main()
