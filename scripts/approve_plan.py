@@ -25,6 +25,7 @@ def case_approve(task_id: int, detail: dict):
     # Update detail with approval info
     detail['status'] = 'approved'
     detail['approved_at'] = datetime.now().isoformat()
+    detail['plan_approved_at'] = datetime.now().isoformat()  # ⚠️ CRITICAL: For executor to verify
     save_task_detail(task_id, detail)
     
     # Add log
@@ -69,6 +70,7 @@ def case_change_agent(task_id: int, detail: dict, new_agent: str):
     detail['selected_agent'] = new_agent
     detail['agent_changed_by_user'] = True
     detail['approved_at'] = datetime.now().isoformat()
+    detail['plan_approved_at'] = datetime.now().isoformat()  # ⚠️ CRITICAL: For executor to verify
     save_task_detail(task_id, detail)
     
     # Add log

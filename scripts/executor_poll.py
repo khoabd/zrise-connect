@@ -295,6 +295,17 @@ def execute_job(job_id: int) -> dict:
     task_id = job['task_id']
     agent_id = job['agent_id']
     
+    # ⚠️ SECURITY CHECK: Verify plan was approved before executing
+    # Load task detail to check for plan_approved_at
+    detail_path = get_task_detail_path(task_id)
+    if detail_path.exists():
+        detail = json.loads(detail_path.read_text(encoding='utf-8'))
+        if not detail.get('plan_approved_at'):
+            return {
+                "success": False,
+                "error": f"Task {task_id}: Plan chưa được approve! Không được phép execute."
+            }
+    
     # Claim job
     claim_result = claim_job(job_id)
     if not claim_result.get('claimed'):
