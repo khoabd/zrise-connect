@@ -93,7 +93,7 @@ def update_stage(task_id, new_stage, comment=None):
     # Update stage — Zrise execute_kw unpacks 7th param as **kw, so pass ids+vals as single param
     try:
         models.execute_kw(db, uid, secret, 'project.task', 'write',
-                          [task_id, {'stage_id': stage_id}])
+                          [[task_id], {'stage_id': stage_id}])
     except xmlrpc.client.Fault as e:
         print(f"❌ Stage update failed: {e}")
         return False

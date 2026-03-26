@@ -39,8 +39,11 @@ def fill_timesheet(task_id, hours, description):
     employees = models.execute_kw(db, uid, secret, 'hr.employee', 'search_read',
                                   [[('user_id', '=', uid)]],
                                   {'fields': ['id', 'name'], 'limit': 1})
-    employee_id = employees[0]['id'] if employees else False
-    employee_name = employees[0]['name'] if employees else f'User {uid}'
+    if not employees:
+        print(f"❌ Employee not found for user {uid}")
+        return False
+    employee_id = employees[0]['id']
+    employee_name = employees[0]['name']
 
     # Create timesheet entry
     today_str = date.today().isoformat()
