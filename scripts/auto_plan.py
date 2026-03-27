@@ -19,6 +19,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from db import get_connection, get_task, get_all_agents, get_task_detail_path, save_task_detail, add_task_log, get_tasks_dir
+from zrise_utils import get_channel_delivery
 
 # Spam control: Don't repeat same "no tasks" message within 15 minutes
 LAST_NO_TASKS_FILE = Path(__file__).parent.parent.parent / '.tasks' / '.last_no_tasks'
@@ -26,11 +27,16 @@ SPAM_INTERVAL_MINUTES = 15
 
 def post_plan_to_telegram(task_id: int, plan: dict, task_detail: dict = None, is_replan: bool = False) -> dict:
     """
-    Post plan to Telegram channel using openclaw agent --deliver.
+    Post plan to channel using openclaw agent --deliver.
 
-    Uses format_message_for_telegram_channels.py to format the message,
-    then sends via openclaw agent --deliver.
+    Reads config from skill.json:
+        - config.agent_id: agent to use
+        - config.channel: channel type (telegram, slack, etc.)
+        - config.reply_account: account for delivery
     """
+    # Get delivery config from skill.json
+    delivery = get_channel_delivery()
+
     # Import formatter
     from format_message_for_telegram_channels import format_plan_message
 
@@ -56,20 +62,28 @@ def post_plan_to_telegram(task_id: int, plan: dict, task_detail: dict = None, is
         priority=priority
     )
 
+    # Build delivery command from config
+    cmd = [
+        'openclaw', 'agent',
+        '--message', text,
+        '--deliver',
+        '--channel', delivery.get('channel', 'telegram'),
+        '--agent', delivery.get('agent_id', 'ai-company'),
+    ]
+
+    # Add reply_account if specified
+    reply_account = delivery.get('reply_account')
+    if reply_account:
+        cmd.extend(['--reply-account', reply_account])
+
     # Send via openclaw agent --deliver
     try:
-        cmd = [
-            'openclaw', 'agent',
-            '--message', text,
-            '--deliver',
-            '--channel', 'telegram',
-            '--agent', 'ai-company',
-            '--reply-account', 'zrise'
-        ]
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
         if result.returncode == 0:
             add_task_log(task_id, 'plan_posted_channel', 'auto_plan', {
-                'output': result.stdout[:200] if result.stdout else 'sent'
+                'output': result.stdout[:200] if result.stdout else 'sent',
+                'channel': delivery.get('channel'),
+                'agent': delivery.get('agent_id')
             })
             return {"success": True, "output": result.stdout[:100] if result.stdout else "sent"}
         else:

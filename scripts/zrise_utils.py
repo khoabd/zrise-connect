@@ -193,11 +193,43 @@ def get_scripts_path(subpath=''):
     return scripts_dir
 
 
+def get_skill_dir():
+    """Get skill directory (where skill.json lives)."""
+    # skill.json is at skills/zrise-connect/skill.json
+    scripts_dir = pathlib.Path(__file__).resolve().parent
+    return scripts_dir.parent  # skills/zrise-connect/
+
+
+def get_skill_config():
+    """Load skill.json configuration."""
+    skill_path = get_skill_dir() / 'skill.json'
+    if skill_path.exists():
+        return load_json(skill_path)
+    return {}
+
+def get_channel_delivery():
+    """Get channel delivery config for sending messages.
+
+    Returns dict with:
+        - agent_id: agent to use for delivery
+        - channel: channel type (telegram, slack, etc.)
+        - reply_account: account to use for delivery
+    """
+    skill_cfg = get_skill_config()
+    cfg = skill_cfg.get('config', {})
+    return {
+        'agent_id': cfg.get('agent_id', 'ai-company'),
+        'channel': cfg.get('channel', 'telegram'),
+        'reply_account': cfg.get('reply_account', '')
+    }
+
+
 # Module-level constants
 ROOT = get_root()
 STATE_PATH = get_state_path()
 CONFIG_PATH = get_config_path()
 SCRIPTS_PATH = get_scripts_path()
+SKILL_CONFIG = get_skill_config()
 
 
 if __name__ == '__main__':

@@ -60,6 +60,11 @@
     "ZRISE_USERNAME": "khoa.bd@atomsolution.com.vn",
     "ZRISE_API_KEY": ""
   },
+  "config": {
+    "agent_id": "ai-company",
+    "channel": "telegram",
+    "reply_account": "zrise"
+  },
   "capabilities": [
     "workflow_management",
     "task_automation",
