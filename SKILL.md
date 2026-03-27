@@ -239,6 +239,7 @@ openclaw cron add \
 | `writeback_to_zrise.py` | Gửi kết quả lên Zrise |
 | `update_task_stage.py` | Update stage |
 | `fill_timesheet.py` | Log timesheet |
+| `format_message_for_telegram_channels.py` | Format message cho Telegram (Plan/Result) |
 
 ---
 
