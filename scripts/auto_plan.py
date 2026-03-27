@@ -26,120 +26,59 @@ SPAM_INTERVAL_MINUTES = 15
 
 def post_plan_to_telegram(task_id: int, plan: dict, task_detail: dict = None, is_replan: bool = False) -> dict:
     """
-    Post plan to Telegram channel with APPROVE/FEEDBACK buttons.
-    Uses subprocess to call openclaw message send.
+    Post plan to Telegram channel using openclaw agent --deliver.
+
+    Uses format_message_for_telegram_channels.py to format the message,
+    then sends via openclaw agent --deliver.
     """
-    TELEGRAM_CHANNEL = "-1003706186341"
-    
-    # Build plan text
+    # Import formatter
+    from format_message_for_telegram_channels import format_plan_message
+
+    # Build plan text using formatter
     task_name = task_detail.get('name', f'Task #{task_id}') if task_detail else f'Task #{task_id}'
     selected_agent = plan.get('selected_agent', 'N/A')
     execution_steps = plan.get('execution_steps', [])
     estimated_time = plan.get('estimated_time', 'N/A')
-    approach = plan.get('approach', '')
+    user_feedback = task_detail.get('user_feedback', '') if task_detail else ''
+    previous_plan = task_detail.get('previous_plan_attempt') if is_replan else None
     priority = plan.get('priority', 'normal')
-    feedback = task_detail.get('user_feedback', '') if task_detail else ''
-    
-    # Header
-    header = "🤖 *AI Execution Plan - Review Required*\n\n"
-    if is_replan:
-        header = "🔄 *AI Re-Plan - Review Required*\n\n"
-    
-    # Task info
-    task_info = f"📋 *Task:* #{task_id} - {task_name}\n"
-    task_info += f"🤖 *Agent:* {selected_agent}\n"
-    task_info += f"⏱️  *Estimated:* {estimated_time}\n"
-    
-    # Steps
-    steps_text = "\n📌 *Execution Steps:*\n"
-    if execution_steps:
-        for i, step in enumerate(execution_steps[:8], 1):
-            step_text = step if isinstance(step, str) else (step.get('description') or step.get('name') or str(step))
-            steps_text += f"  {i}. {step_text[:80]}\n"
-    
-    footer = "\n---\nReply [APPROVE] hoặc [FEEDBACK]"
-    
-    text = header + task_info + steps_text + footer
-    text = text[:4096]
-    
-    # Format for markdown
-    import urllib.parse
-    
-    # Build inline keyboard JSON
-    keyboard = {
-        "inline_keyboard": [[
-            {"text": "✅ APPROVE", "callback_data": f"approve_{task_id}"},
-            {"text": "💬 FEEDBACK", "callback_data": f"feedback_{task_id}"}
-        ]]
-    }
-    import json as json_lib
-    keyboard_str = urllib.parse.quote(json_lib.dumps(keyboard))
-    
-    # Try direct Telegram API first
-    import requests
-    
-    # Get bot token from openclaw config
-    config_path = Path.home() / '.openclaw' / 'openclaw.json'
-    bot_token = None
-    if config_path.exists():
-        with open(config_path) as f:
-            config = json.load(f)
-        # Try to find bot token in various places
-        plugins = config.get('plugins', {})
-        entries = plugins.get('entries', {})
-        
-        # Try telegram plugin first
-        telegram = entries.get('telegram', {})
-        bot_token = telegram.get('botToken')
-        
-        # Try ai-company account
-        if not bot_token:
-            accounts = config.get('accounts', {})
-            for account_id, account_data in accounts.items():
-                if isinstance(account_data, dict):
-                    tg = account_data.get('telegram', {})
-                    bot_token = tg.get('botToken') or tg.get('bot_token')
-                    if bot_token:
-                        break
-    
-    if bot_token:
-        url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-        params = {
-            'chat_id': TELEGRAM_CHANNEL,
-            'text': text,
-            'parse_mode': 'Markdown',
-            'reply_markup': json_lib.dumps(keyboard)
-        }
-        try:
-            r = requests.post(url, params=params, timeout=30)
-            result = r.json()
-            if result.get('ok'):
-                msg_id = result.get('result', {}).get('message_id')
-                # Log to task
-                add_task_log(task_id, 'plan_posted_telegram', 'auto_plan', {
-                    'target': TELEGRAM_CHANNEL,
-                    'message_id': msg_id
-                })
-                return {"success": True, "message_id": msg_id, "target": TELEGRAM_CHANNEL}
-        except Exception as e:
-            pass
-    
-    # Fallback: use openclaw message send
+
+    # Format message
+    text = format_plan_message(
+        task_id=task_id,
+        task_name=task_name,
+        selected_agent=selected_agent,
+        execution_steps=execution_steps,
+        estimated_time=estimated_time,
+        is_replan=is_replan,
+        user_feedback=user_feedback,
+        previous_plan=previous_plan,
+        priority=priority
+    )
+
+    # Send via openclaw agent --deliver
     try:
         cmd = [
-            'openclaw', 'message', 'send',
+            'openclaw', 'agent',
+            '--message', text,
+            '--deliver',
             '--channel', 'telegram',
-            '--target', TELEGRAM_CHANNEL,
-            '--', text
+            '--agent', 'ai-company'
         ]
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
         if result.returncode == 0:
-            add_task_log(task_id, 'plan_posted_telegram', 'auto_plan', {'target': TELEGRAM_CHANNEL})
-            return {"success": True, "target": TELEGRAM_CHANNEL}
-    except:
-        pass
-    
-    return {"success": False, "error": "Failed to send"}
+            add_task_log(task_id, 'plan_posted_channel', 'auto_plan', {
+                'output': result.stdout[:200] if result.stdout else 'sent'
+            })
+            return {"success": True, "output": result.stdout[:100] if result.stdout else "sent"}
+        else:
+            add_task_log(task_id, 'plan_posted_failed', 'auto_plan', {
+                'error': result.stderr[:200] if result.stderr else 'unknown'
+            })
+            return {"success": False, "error": result.stderr[:200] if result.stderr else "failed"}
+    except Exception as e:
+        add_task_log(task_id, 'plan_posted_failed', 'auto_plan', {'error': str(e)})
+        return {"success": False, "error": str(e)}
 
 
 def _get_last_no_tasks_time():
