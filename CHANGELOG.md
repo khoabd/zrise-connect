@@ -2,6 +2,19 @@
 
 Tất cả các thay đổi đáng chú ý cho skill này sẽ được ghi lại trong file này.
 
+## 3.6.0 (2026-03-27)
+
+### Sửa lỗi
+
+- **Poll Status Sync**: `poll_employee_work.py` giờ cập nhật local SQLite status sang `'done'` khi task trên Zrise chuyển sang stage done/cancelled. Trước đây task đã import rồi sẽ không được cập nhật khi Zrise thay đổi.
+
+### Cleanup
+
+- Xóa `workflows/` directory (rỗng, không còn .lobster files)
+- Xóa `__pycache__/`, `.pytest_cache/`
+- Xóa `scripts/*.backup`, `scripts/*.bak`
+- Xóa `scripts/poll_employee_work_debug.py`
+
 ## 3.5.0 (2026-03-26)
 
 ### Tính năng mới
