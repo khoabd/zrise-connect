@@ -1,10 +1,10 @@
 # Agent Executor Guide - Zrise Connect
 
-Hướng dẫn cho các executor agents sử dụng zrise-connect skill để gửi kết quả lên Telegram.
+Hướng dẫn cho các executor agents sử dụng zrise-connect skill.
 
 ## 🎯 Tổng quan
 
-Executor agents nhận job từ Orchestrator queue, thực thi task, và gửi kết quả lên Telegram để user review.
+Executor agents nhận job từ Orchestrator queue, thực thi task, và gửi kết quả lên channel để user review qua `openclaw agent --deliver`.
 
 ## 📁 Script location
 
@@ -17,12 +17,14 @@ Executor agents nhận job từ Orchestrator queue, thực thi task, và gửi k
 ### 1. Plan Message - Gửi khi có plan mới
 
 ```bash
-python3 scripts/format_message_for_telegram_channels.py plan \
+MSG=$(python3 scripts/format_message_for_telegram_channels.py plan \
   --task-id <ID> \
   --task-name "<tên task>" \
   --agent <agent-id> \
   --steps "Bước 1" "Bước 2" "Bước 3" \
-  --estimated "30 phút"
+  --estimated "30 phút")
+
+openclaw agent --message "$MSG" --deliver
 ```
 
 **Output:**
@@ -48,12 +50,14 @@ python3 scripts/format_message_for_telegram_channels.py plan \
 ### 2. Result Message - Gửi khi hoàn thành task
 
 ```bash
-python3 scripts/format_message_for_telegram_channels.py result \
+MSG=$(python3 scripts/format_message_for_telegram_channels.py result \
   --task-id <ID> \
   --task-name "<tên task>" \
   --agent <agent-id> \
   --summary "<tóm tắt kết quả>" \
-  --time "25 phút"
+  --time "25 phút")
+
+openclaw agent --message "$MSG" --deliver
 ```
 
 **Output:**
@@ -77,12 +81,8 @@ _Đã soạn draft email quảng cáo_
 ## 🐍 Dùng trong Python Code
 
 ```python
-from format_message_for_telegram_channels import (
-    format_plan_message,
-    format_result_message,
-    format_plan_buttons,
-    format_result_buttons
-)
+from format_message_for_telegram_channels import format_plan_message, format_result_message
+import subprocess
 
 # Format plan message
 msg = format_plan_message(
@@ -92,17 +92,9 @@ msg = format_plan_message(
     execution_steps=["Soạn draft", "Review", "Gửi"],
     estimated_time="30 phút"
 )
-buttons = format_plan_buttons(42541)
 
-# Format result message
-msg = format_result_message(
-    task_id=42541,
-    task_name="Viết quảng cáo máy bán hàng",
-    agent_id="sales-agent",
-    result_summary="Đã hoàn thành draft email",
-    execution_time="25 phút"
-)
-buttons = format_result_buttons(42541)
+# Gửi bằng openclaw agent --deliver
+subprocess.run(['openclaw', 'agent', '--message', msg, '--deliver'])
 ```
 
 ## 🔄 Workflow cho Executor Agent
@@ -112,7 +104,7 @@ buttons = format_result_buttons(42541)
 2. Execute task
 3. Write result.md
 4. Update job status = 'done'
-5. Gửi result message lên Telegram
+5. Format message và gửi: openclaw agent --message "$MSG" --deliver
 6. Update task status trong SQLite
 ```
 
@@ -127,23 +119,30 @@ buttons = format_result_buttons(42541)
 | finance-agent | invoice-processing, expense-report | Finance tasks |
 | support-agent | ticket-triage, faq-generation | Support tasks |
 
+## 🔗 OpenClaw Agent Send
+
+Doc: https://docs.openclaw.ai/tools/agent-send
+
+```bash
+# Gửi message tới channel mà agent đang được map
+openclaw agent --message "Your message" --deliver
+
+#指定 channel
+openclaw agent --message "Your message" --deliver --channel telegram --reply-to "@your_channel"
+
+#指定 agent
+openclaw agent --agent sales-agent --message "$MSG" --deliver
+```
+
+**Key flags:**
+- `--message` - Message cần gửi
+- `--deliver` - Gửi reply tới channel (thay vì chỉ trả lời trong session)
+- `--channel` - Channel type (telegram, discord, slack, whatsapp)
+- `--reply-to` - Override target (chat ID, channel name)
+- `--agent` - Dùng agent cụ thể để gửi
+
 ## ⚠️ Lưu ý
 
-1. **Luôn dùng format_message_for_telegram_channels.py** - Đảm bảo format nhất quán
-2. **Task ID phải đúng** - Dùng để callback buttons hoạt động
-3. **Buttons được gửi kèm** - Telegram sẽ hiển thị inline buttons
-
-## 🔧 Troubleshooting
-
-**Script not found:**
-```bash
-# Đảm bảo path đúng
-ls ~/.openclaw/workspace-ai-company/skills/zrise-connect/scripts/format_message_for_telegram_channels.py
-```
-
-**Import error:**
-```python
-import sys
-sys.path.insert(0, '~/.openclaw/workspace-ai-company/skills/zrise-connect/scripts')
-from format_message_for_telegram_channels import ...
-```
+1. **CHỈ format message** - Script chỉ trả về text, không gửi đi
+2. **Dùng `openclaw agent --deliver`** - Agent tự gửi tới channel mà nó được map
+3. **Session tự động** - `--deliver` reply vào session/channel mà agent đang active

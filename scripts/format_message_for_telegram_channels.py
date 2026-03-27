@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
 """
-format_message_for_telegram_channels.py - Format messages for Telegram channels.
+format_message_for_telegram_channels.py - Format messages for OpenClaw channel delivery.
 
-Dùng chung cho:
-- Agent tạo Plan → gửi lên Telegram review
-- System post kết quả → gửi lên Telegram
+CHỈ format message text thôi. Agent dùng `openclaw agent --deliver` để reply lên channel.
 
-Chuẩn format:
-- Plan: 📋 Task, 🤖 Agent, ⏱️ Estimated, 📌 Steps, ✅ APPROVE / 💬 FEEDBACK
-- Result: 📋 Task, ✅ Done, 📝 Result summary
+Doc: https://docs.openclaw.ai/tools/agent-send
+
+Usage trong agent:
+    openclaw agent --message "$(format_message ...)" --deliver
+
+Ví dụ:
+    MSG=$(python3 scripts/format_message_for_telegram_channels.py plan --task-id 42541 ...)
+    openclaw agent --message "$MSG" --deliver
 """
 
 import json
@@ -29,7 +32,7 @@ def format_plan_message(
     priority: str = "normal"
 ) -> str:
     """
-    Format message cho Plan gửi lên Telegram.
+    Format message cho Plan gửi lên channel review.
 
     Args:
         task_id: Task ID
@@ -43,7 +46,7 @@ def format_plan_message(
         priority: Priority (low/normal/high/urgent)
 
     Returns:
-        Formatted message string cho Telegram
+        Formatted message string cho channel
     """
     lines = []
 
@@ -110,7 +113,7 @@ def format_result_message(
     files_created: list = None
 ) -> str:
     """
-    Format message cho Result gửi lên Telegram sau khi execute xong.
+    Format message cho Result gửi lên channel sau khi execute xong.
 
     Args:
         task_id: Task ID
@@ -122,7 +125,7 @@ def format_result_message(
         files_created: List file đã tạo
 
     Returns:
-        Formatted message string cho Telegram
+        Formatted message string cho channel
     """
     lines = []
 
@@ -189,7 +192,7 @@ def format_task_info_message(
         priority: Priority
 
     Returns:
-        Formatted message string cho Telegram
+        Formatted message string cho channel
     """
     priority_emoji = {"low": "🟢", "normal": "🔵", "high": "🟠", "urgent": "🔴"}.get(priority.lower(), "🔵")
 
@@ -211,52 +214,12 @@ def format_task_info_message(
     return '\n'.join(lines)
 
 
-# ===== BUTTONS =====
-
-def format_plan_buttons(task_id: int, is_replan: bool = False) -> dict:
-    """
-    Format inline buttons cho Plan message.
-
-    Args:
-        task_id: Task ID
-        is_replan: True nếu là re-plan
-
-    Returns:
-        Telegram reply_markup dict
-    """
-    label = "🔄 RE-PLAN" if is_replan else "✅ APPROVE"
-    return {
-        "inline_keyboard": [[
-            {"text": label, "callback_data": f"approve_{task_id}"},
-            {"text": "💬 FEEDBACK", "callback_data": f"feedback_{task_id}"}
-        ]]
-    }
-
-
-def format_result_buttons(task_id: int) -> dict:
-    """
-    Format inline buttons cho Result message.
-
-    Args:
-        task_id: Task ID
-
-    Returns:
-        Telegram reply_markup dict
-    """
-    return {
-        "inline_keyboard": [[
-            {"text": "✅ APPROVE RESULT", "callback_data": f"approve_result_{task_id}"},
-            {"text": "💬 FEEDBACK", "callback_data": f"feedback_{task_id}"}
-        ]]
-    }
-
-
 # ===== CLI =====
 
 if __name__ == '__main__':
     import argparse
 
-    parser = argparse.ArgumentParser(description='Format Telegram messages')
+    parser = argparse.ArgumentParser(description='Format channel messages (OpenClaw agent-send)')
     sub = parser.add_subparsers(dest='type', help='Message type')
 
     # Plan message
@@ -278,6 +241,14 @@ if __name__ == '__main__':
     result.add_argument('--path', type=str, default='')
     result.add_argument('--time', type=str, default='N/A')
 
+    # Task info message
+    task_info = sub.add_parser('task', help='Format task info message')
+    task_info.add_argument('--task-id', type=int, required=True)
+    task_info.add_argument('--task-name', type=str, required=True)
+    task_info.add_argument('--description', type=str, default='')
+    task_info.add_argument('--project', type=str, default='N/A')
+    task_info.add_argument('--deadline', type=str, default='N/A')
+
     args = parser.parse_args()
 
     if args.type == 'plan':
@@ -291,8 +262,6 @@ if __name__ == '__main__':
             user_feedback=args.feedback
         )
         print(msg)
-        print("\n--- Buttons ---")
-        print(json.dumps(format_plan_buttons(args.task_id, args.replan), indent=2))
 
     elif args.type == 'result':
         msg = format_result_message(
@@ -304,8 +273,16 @@ if __name__ == '__main__':
             execution_time=args.time
         )
         print(msg)
-        print("\n--- Buttons ---")
-        print(json.dumps(format_result_buttons(args.task_id), indent=2))
+
+    elif args.type == 'task':
+        msg = format_task_info_message(
+            task_id=args.task_id,
+            task_name=args.task_name,
+            description=args.description,
+            project=args.project,
+            deadline=args.deadline
+        )
+        print(msg)
 
     else:
         parser.print_help()
