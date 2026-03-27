@@ -1,10 +1,10 @@
-# Agent Executor Guide - Zrise Connect
+# Orchestrator Guide - Zrise Connect
 
-Hướng dẫn cho các executor agents sử dụng zrise-connect skill.
+Hướng dẫn cho **ai-company** (orchestrator agent) sử dụng zrise-connect skill để gửi message lên channel.
 
 ## 🎯 Tổng quan
 
-Executor agents nhận job từ Orchestrator queue, thực thi task, và gửi kết quả lên channel để user review qua `openclaw agent --deliver`.
+`ai-company` là orchestrator - agent chính điều phối workflow. Khi cần gửi Plan/Result lên Telegram/Slack cho user review, dùng `openclaw agent --deliver`.
 
 ## 📁 Script location
 
@@ -14,10 +14,11 @@ Executor agents nhận job từ Orchestrator queue, thực thi task, và gửi k
 
 ## 📝 Message Types
 
-### 1. Plan Message - Gửi khi có plan mới
+### 1. Plan Message - Gửi khi có plan mới cần user approve
 
 ```bash
-MSG=$(python3 scripts/format_message_for_telegram_channels.py plan \
+MSG=$(python3 ~/.openclaw/workspace-ai-company/skills/zrise-connect/scripts/format_message_for_telegram_channels.py \
+  plan \
   --task-id <ID> \
   --task-name "<tên task>" \
   --agent <agent-id> \
@@ -27,7 +28,7 @@ MSG=$(python3 scripts/format_message_for_telegram_channels.py plan \
 openclaw agent --message "$MSG" --deliver
 ```
 
-**Output:**
+**Output nhận được:**
 ```
 🤖 *AI Execution Plan - Review Required*
 
@@ -50,7 +51,8 @@ openclaw agent --message "$MSG" --deliver
 ### 2. Result Message - Gửi khi hoàn thành task
 
 ```bash
-MSG=$(python3 scripts/format_message_for_telegram_channels.py result \
+MSG=$(python3 ~/.openclaw/workspace-ai-company/skills/zrise-connect/scripts/format_message_for_telegram_channels.py \
+  result \
   --task-id <ID> \
   --task-name "<tên task>" \
   --agent <agent-id> \
@@ -60,7 +62,7 @@ MSG=$(python3 scripts/format_message_for_telegram_channels.py result \
 openclaw agent --message "$MSG" --deliver
 ```
 
-**Output:**
+**Output nhận được:**
 ```
 ✅ *Task Completed*
 
@@ -97,27 +99,17 @@ msg = format_plan_message(
 subprocess.run(['openclaw', 'agent', '--message', msg, '--deliver'])
 ```
 
-## 🔄 Workflow cho Executor Agent
+## 🔄 Orchestrator Workflow
 
 ```
-1. Nhận job (status = 'assigned')
-2. Execute task
-3. Write result.md
-4. Update job status = 'done'
-5. Format message và gửi: openclaw agent --message "$MSG" --deliver
-6. Update task status trong SQLite
+1. poll_employee_work.py → Poll task từ Zrise
+2. auto_plan.py → AI lên plan
+3. Gửi Plan lên channel: openclaw agent --message "$MSG" --deliver
+4. User reply [APPROVE] hoặc [FEEDBACK]
+5. Nếu APPROVE → Execute task
+6. Gửi Result lên channel
+7. User reply [APPROVE] → Done
 ```
-
-## 📋 Các Agent hiện có
-
-| Agent | Skills | Use Case |
-|-------|--------|----------|
-| sales-agent | email-draft, lead-qualification | Sales tasks |
-| eng-agent | coding, bug-triage, code-review | Engineering tasks |
-| pm-agent | requirement-analysis, sprint-planning | PM tasks |
-| hr-agent | onboarding, offboarding | HR tasks |
-| finance-agent | invoice-processing, expense-report | Finance tasks |
-| support-agent | ticket-triage, faq-generation | Support tasks |
 
 ## 🔗 OpenClaw Agent Send
 
@@ -127,11 +119,8 @@ Doc: https://docs.openclaw.ai/tools/agent-send
 # Gửi message tới channel mà agent đang được map
 openclaw agent --message "Your message" --deliver
 
-#指定 channel
+# Chỉ định channel cụ thể
 openclaw agent --message "Your message" --deliver --channel telegram --reply-to "@your_channel"
-
-#指定 agent
-openclaw agent --agent sales-agent --message "$MSG" --deliver
 ```
 
 **Key flags:**
@@ -139,10 +128,9 @@ openclaw agent --agent sales-agent --message "$MSG" --deliver
 - `--deliver` - Gửi reply tới channel (thay vì chỉ trả lời trong session)
 - `--channel` - Channel type (telegram, discord, slack, whatsapp)
 - `--reply-to` - Override target (chat ID, channel name)
-- `--agent` - Dùng agent cụ thể để gửi
 
 ## ⚠️ Lưu ý
 
-1. **CHỈ format message** - Script chỉ trả về text, không gửi đi
-2. **Dùng `openclaw agent --deliver`** - Agent tự gửi tới channel mà nó được map
+1. **CHỉ format message** - Script chỉ trả về text, không gửi đi
+2. **Dùng `openclaw agent --deliver`** - Gửi tới channel mà agent được map
 3. **Session tự động** - `--deliver` reply vào session/channel mà agent đang active
