@@ -73,9 +73,17 @@ lobster run workflows/zrise-execute.lobster \
 ```
 
 ### Setup Cron (mỗi 1 phút)
+
+Dùng **OpenClaw cron jobs** (không dùng crontab). Xem chi tiết tại [CRON_SETUP.md](CRON_SETUP.md).
+
 ```bash
-chmod +x scripts/zrise-poll-cron.sh
-(crontab -l 2>/dev/null; echo "* * * * * /Users/khoabui/.openclaw/workspace-ai-company/skills/zrise-connect/scripts/zrise-poll-cron.sh 10 /tmp/zrise-poll-latest.json") | crontab -
+# Tạo cron poll task
+openclaw cron add \
+  --name "zrise-poll" \
+  --cron "* * * * *" \
+  --agent <AGENT_ID> \
+  --session isolated \
+  --message "cd ~/.openclaw/workspace-ai-company/skills/zrise-connect && python3 scripts/poll_employee_work.py --once"
 ```
 
 ---

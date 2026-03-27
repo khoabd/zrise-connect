@@ -94,15 +94,29 @@ lobster run workflows/zrise-execute.lobster \
 
 ## ⏰ Cron Setup
 
-Poll tự động mỗi 1 phút:
+Dùng **OpenClaw cron jobs** (không dùng crontab). Xem chi tiết tại [docs/CRON_SETUP.md](docs/CRON_SETUP.md).
 
 ```bash
-# Setup crontab
-(crontab -l 2>/dev/null; echo "* * * * * /Users/khoabui/.openclaw/workspace-ai-company/skills/zrise-connect/scripts/zrise-poll-cron.sh 10 /tmp/zrise-poll-latest.json") | crontab -
+# Tạo cron poll task (mỗi 1 phút)
+openclaw cron add \
+  --name "zrise-poll" \
+  --cron "* * * * *" \
+  --agent <AGENT_ID> \
+  --session isolated \
+  --message "cd ~/.openclaw/workspace-ai-company/skills/zrise-connect && python3 scripts/poll_employee_work.py --once" \
+  --announce
 
-# Kiểm tra
-crontab -l
-tail -f /tmp/zrise-poll.log
+# Tạo cron auto-plan (mỗi 5 phút)
+openclaw cron add \
+  --name "zrise-auto-plan" \
+  --cron "*/5 * * * *" \
+  --agent <AGENT_ID> \
+  --session isolated \
+  --message "cd ~/.openclaw/workspace-ai-company/skills/zrise-connect && python3 scripts/auto_plan.py --info" \
+  --announce
+
+# Sau đó sửa delivery mode thành "none" để tránh spam
+# (xem docs/CRON_SETUP.md)
 ```
 
 ## 🤖 Agent Routing
