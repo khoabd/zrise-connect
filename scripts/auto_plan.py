@@ -63,7 +63,8 @@ def post_plan_to_telegram(task_id: int, plan: dict, task_detail: dict = None, is
             '--message', text,
             '--deliver',
             '--channel', 'telegram',
-            '--agent', 'ai-company'
+            '--agent', 'ai-company',
+            '--reply-account', 'zrise'
         ]
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
         if result.returncode == 0:
