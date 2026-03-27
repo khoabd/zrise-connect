@@ -124,6 +124,13 @@ def poll_tasks(employee_id, limit=20, sync=False):
                     "stage": stage_name
                 })
                 synced_count += 1
+            # Check if task has moved to done/cancelled stage on Zrise
+            if is_done(stage_name):
+                update_task_status(task_id, 'done')
+                add_task_log(task_id, "zrise_stage_done", "system", {
+                    "source": "zrise_poll",
+                    "stage": stage_name
+                })
             continue
         
         # Task mới - tạo trong DB + detail.json
